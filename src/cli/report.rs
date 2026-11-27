@@ -11,6 +11,13 @@ pub fn run() -> Result<(), String> {
         .filter_map(|r| r.ok())
         .map(|raw| crate::derive::hours::RawHeartbeat { raw })
         .collect();
-    print!("{}", crate::report::text::render(&crate::derive::hours::per_day_project(&rows)));
+    let agents: Vec<String> = store.conn
+        .prepare("SELECT raw FROM agent_heartbeats ORDER BY id")
+        .map_err(|e| e.to_string())?
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    print!("{}", crate::report::text::render(&crate::derive::hours::per_day_project_episode(&rows, &agents)));
     Ok(())
 }
