@@ -4,11 +4,8 @@
 
 **Your hours, tracked securely.**
 
-byline sits between your editor and Hackatime — invisible, passive, local —
+byline sits between your editor and Hackatime — passive, local, invisible —
 and counts human involvement around AI, not agent runtime.
-
-Then it builds the evidence a reviewer needs to say
-*"yes, these hours are real"* — in minutes, not courtrooms.
 
 <br>
 
@@ -26,11 +23,17 @@ Then it builds the evidence a reviewer needs to say
 
 <br>
 
-## how it works
+## install
 
-Your editor sends the heartbeats it always sent. byline stores them raw,
-forwards them untouched, and derives the human story from the AI and human
-fields already in every heartbeat.
+```
+cargo install --path .
+byline setup      # repoint ~/.wakatime.cfg, install editor hooks
+byline serve      # start the local daemon
+byline status     # one-line status
+byline report     # hours per project
+byline export     # JSONL export
+byline unsetup    # restore ~/.wakatime.cfg
+```
 
 <br>
 
@@ -38,15 +41,8 @@ fields already in every heartbeat.
 
 | editor | status |
 |:---:|:---:|
-| <img src="https://avatars.githubusercontent.com/u/115930451?s=20" width="20" height="20" alt="Claude Code" /> **Claude Code** | supported |
-| <img src="https://avatars.githubusercontent.com/u/178074724?s=20" width="20" height="20" alt="OpenCode" /> **OpenCode** | supported |
-
-<br>
-
-## status
-
-design phase — the wire contract and the review artifact are specified;
-the daemon is next.
+| 🤖 **Claude Code** | supported |
+| ⚡ **OpenCode** | supported |
 
 <br>
 
