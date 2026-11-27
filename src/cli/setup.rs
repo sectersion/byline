@@ -18,7 +18,7 @@ pub fn wakatime_cfg() -> PathBuf {
 
 /// Sets the given key's value in the INI file (line replacement, no crate).
 /// found==false means the key was absent and the caller appends a fallback.
-fn set_ini(content: &str, key: &str, value: &str) -> (String, bool) {
+pub fn set_ini(content: &str, key: &str, value: &str) -> (String, bool) {
     let mut found = false;
     let out: Vec<String> = content
         .lines()
@@ -43,7 +43,7 @@ fn set_ini(content: &str, key: &str, value: &str) -> (String, bool) {
     (res.join("\n"), false)
 }
 
-pub(crate) fn get_ini(content: &str, key: &str) -> Option<String> {
+pub fn get_ini(content: &str, key: &str) -> Option<String> {
     content.lines().find_map(|l| {
         // prefix must land on a key= boundary, not mid-token
         let rest = l.trim_start().strip_prefix(key)?.trim_start_matches(['=', ' ']);
@@ -124,112 +124,3 @@ pub fn unsetup() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-    use std::sync::Mutex;
-
-    // TempHome mutates process-global env vars; tests share one HOME_LOCK.
-    pub(crate) static HOME_LOCK: Mutex<()> = Mutex::new(());
-
-    pub(crate) struct TempHome {
-        dir: PathBuf,
-    }
-    impl TempHome {
-        pub(crate) fn new(name: &str) -> (TempHome, PathBuf) {
-            let mut dir = std::env::temp_dir();
-            dir.push(format!("byline-setup-{}-{name}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
-            let dir = dir.canonicalize().unwrap();
-            std::env::set_var("USERPROFILE", &dir);
-            std::env::set_var("HOME", &dir);
-            (TempHome { dir: dir.clone() }, dir)
-        }
-    }
-    impl Drop for TempHome {
-        fn drop(&mut self) {
-            std::fs::remove_dir_all(&self.dir).ok();
-        }
-    }
-
-    fn write_cfg(home: &PathBuf, content: &str) {
-        let mut p = home.clone();
-        p.push(".wakatime.cfg");
-        std::fs::write(p, content).unwrap();
-    }
-
-    fn read_cfg(home: &PathBuf) -> String {
-        let mut p = home.clone();
-        p.push(".wakatime.cfg");
-        std::fs::read_to_string(p).unwrap()
-    }
-
-    const CFG: &str = "[settings]\napi_key = k-k-k\napi_url = https://hackatime.hackclub.com/api/hackatime/v1\nheartbeat_rate_limit_seconds = 30\n";
-
-    #[test]
-    fn backup_created_api_url_repointed() {
-        let _g = HOME_LOCK.lock().unwrap();
-        let (_h, home) = TempHome::new("basic");
-        write_cfg(&home, CFG);
-        run(false).unwrap();
-        let out = read_cfg(&home);
-        assert!(out.contains(&format!("api_url = {BYLINE_URL}")), "out={out}");
-        assert!(out.contains("api_key = k-k-k"), "key preserved");
-        let mut bak = home.clone();
-        bak.push(".wakatime.cfg.byline-bak");
-        assert_eq!(std::fs::read_to_string(&bak).unwrap(), CFG, "backup byte-identical");
-        // FIX-007: config table seeded for the drain
-        let mut dbp = home.clone(); dbp.push(".byline/byline.db");
-        let store = crate::store::Store::open(&dbp).unwrap();
-        let get = |k: &str| -> String { store.conn.query_row("SELECT value FROM config WHERE key = ?", [k], |r| r.get(0)).unwrap() };
-        assert_eq!(get("upstream_api_url"), "https://hackatime.hackclub.com/api/hackatime/v1"); assert_eq!(get("upstream_api_key"), "k-k-k");
-    }
-
-    #[test]
-    fn rerun_is_noop() {
-        let _g = HOME_LOCK.lock().unwrap();
-        let (_h, home) = TempHome::new("noop");
-        write_cfg(&home, CFG);
-        run(false).unwrap();
-        let after1 = read_cfg(&home);
-        run(false).unwrap();
-        assert_eq!(read_cfg(&home), after1, "second run changes nothing");
-    }
-
-    #[test]
-    fn reclaim_after_foreign_rewrite() {
-        let _g = HOME_LOCK.lock().unwrap();
-        let (_h, home) = TempHome::new("reclaim");
-        write_cfg(&home, CFG);
-        run(false).unwrap();
-        // hackatime-setup clobbers the file back to Hackatime
-        write_cfg(&home, CFG);
-        run(false).unwrap();
-        let out = read_cfg(&home);
-        assert!(out.contains(&format!("api_url = {BYLINE_URL}")), "re-claimed: {out}");
-        assert!(out.contains("api_key = k-k-k"));
-    }
-
-    #[test]
-    fn unsetup_restores() {
-        let _g = HOME_LOCK.lock().unwrap();
-        let (_h, home) = TempHome::new("unsetup");
-        write_cfg(&home, CFG);
-        run(false).unwrap();
-        unsetup().unwrap();
-        assert_eq!(read_cfg(&home), CFG, "restored byte-identical");
-    }
-
-    #[test]
-    fn set_ini_replaces_in_place() {
-        let (out, _) = set_ini("[settings]\napi_key = a\napi_url = old\n", "api_url", "new");
-        assert!(out.starts_with("[settings]\napi_key = a\napi_url = new"), "out={out}");
-        let (added, _) = set_ini("[settings]\napi_key = a\n", "api_url", "new");
-        assert!(added.contains("api_url = new"));
-        let (bare, _) = set_ini("nothing relevant\n", "api_url", "new");
-        assert!(bare.contains("api_url = new"));
-        // already-correct value must not be double-appended
-        let (same, found) = set_ini("[settings]\napi_url = new\n", "api_url", "new");
-        assert!(found && !same.contains("api_url = new\napi_url"), "no duplicate: {same}");
-    }
-}

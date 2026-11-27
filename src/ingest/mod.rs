@@ -36,7 +36,7 @@ pub enum IngestOutcome {
 
 /// Last 4 bytes of the key, empty for short keys. sqlite keeps provenance,
 /// never the credential.
-fn fingerprint(key: &str) -> &str {
+pub fn fingerprint(key: &str) -> &str {
     if key.len() <= 4 {
         return "";
     }
