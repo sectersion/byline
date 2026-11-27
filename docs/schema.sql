@@ -26,8 +26,9 @@ CREATE TABLE config (
   value TEXT NOT NULL
 );
 CREATE TABLE sessions_cache (
-  -- placeholder: FORBIDDEN to use for derived numbers; kept empty until a
-  -- genuine non-derivable need appears, else dropped at next migration
+  -- TODO (noted at FEAT-001 review): if no genuine non-derivable need appears
+  -- by the first real migration, drop this table then. FORBIDDEN for derived
+  -- numbers (cached totals).
   id INTEGER PRIMARY KEY
 );
 CREATE TABLE schema_meta (
