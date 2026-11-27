@@ -57,8 +57,12 @@ fn set_ini(content: &str, key: &str, value: &str) -> (String, bool) {
 fn get_ini(content: &str, key: &str) -> Option<String> {
     content.lines().find_map(|l| {
         let t = l.trim_start();
-        let rest = t.strip_prefix(key)?.strip_prefix(['=', ' '])?.trim();
-        Some(rest.to_string())
+        let rest = t.strip_prefix(key)?;
+        let rest = rest.trim_start_matches(['=', ' ']);
+        if rest == l.trim_start() {
+            return None; // prefix didn't actually match a key= boundary
+        }
+        Some(rest.trim().to_string())
     })
 }
 

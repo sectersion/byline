@@ -7,14 +7,15 @@ pub fn run() -> Result<(), String> {
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(8787);
-    let mut path = home_dir();
-    std::fs::create_dir_all(&path).ok();
-    path.push("byline.db");
-    let store = crate::store::Store::open(&path).map_err(|e| e.to_string())?;
+    let (store, _path) = crate::cli::status::open_store()?;
     crate::ingest::server::run(port, Arc::new(Mutex::new(store)))
 }
 
 pub fn home_dir() -> std::path::PathBuf {
+    // BYLINE_HOME overrides (tests/e2e); else Windows USERPROFILE, else HOME
+    if let Some(b) = std::env::var_os("BYLINE_HOME") {
+        return std::path::PathBuf::from(b);
+    }
     std::env::var_os("USERPROFILE")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
