@@ -1,8 +1,8 @@
 // One file per subcommand.
 
 pub mod serve;
-mod setup;
-mod setup_plugin;
+pub mod setup;
+pub mod setup_plugin;
 
 pub mod report;
 pub mod status;
