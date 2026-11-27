@@ -12,20 +12,28 @@ pub const CATEGORY: &str = "ai coding";
 /// The ±30 min window (seconds) for matching an editor heartbeat.
 const MATCH_WINDOW: i64 = 1800;
 
+/// Hook events older than this (seconds) are stale replays: dropped at drain
+/// time — an old replay must not create fake activity.
+pub const STALE_SECS: i64 = 600;
+
+pub fn is_stale(received_at: i64) -> bool { now_secs() - received_at > STALE_SECS }
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64
+}
+
 /// Composes the WakaTime heartbeat JSON for one stored agent row.
 /// `raw`/`received_at` come straight from the agent_heartbeats row.
 pub fn to_heartbeat(store: &crate::store::Store, raw: &str, received_at: i64) -> Result<String, String> {
     let ev: serde_json::Value = serde_json::from_str(raw).map_err(|e| format!("bad agent row: {e}"))?;
     let file_path = ev.get("file_path").and_then(|x| x.as_str());
-    let (entity, project) = match match_editor(store, received_at) {
-        Some((entity, project)) => (Some(entity), Some(project)),
-        None => match file_path {
-            Some(p) => (
-                Some(p.to_string()),
-                parent_dir(p),
-            ),
-            None => (None, None),
-        },
+    // editor match wins unless it carries no project (empty string is not a
+    // project); then the file path's parent dir is the project.
+    let matched = match_editor(store, received_at).filter(|(_, p)| !p.is_empty());
+    let (entity, project) = match (matched, file_path) {
+        (Some((entity, project)), _) => (Some(entity), Some(project)),
+        (None, Some(p)) => (Some(p.to_string()), parent_dir(p)),
+        (None, None) => (None, None),
     };
     let mut hb = serde_json::Map::new();
     hb.insert("time".into(), json!(received_at as f64));
@@ -74,9 +82,9 @@ fn match_editor(store: &crate::store::Store, received_at: i64) -> Option<(String
         .conn
         .query_row(
             "SELECT raw FROM heartbeats
-             WHERE received_at BETWEEN ? - 1800 AND ? + 1800
+             WHERE received_at BETWEEN ? AND ?
              ORDER BY abs(received_at - ?), id LIMIT 1",
-            rusqlite::params![received_at, received_at, received_at],
+            rusqlite::params![received_at - MATCH_WINDOW, received_at + MATCH_WINDOW, received_at],
             |r| r.get(0),
         )
         .ok()?;
@@ -168,8 +176,7 @@ mod tests {
         let (raw, received_at) = stored_raw(&store);
         let hb: serde_json::Value =
             serde_json::from_str(&to_heartbeat(&store, &raw, received_at).unwrap()).unwrap();
-        assert_eq!(hb["entity"], serde_json::json!("C:\\p\\a.rs"));
-        assert_eq!(hb["project"], serde_json::json!("C:\\p"));
+        assert_eq!(hb["entity"], serde_json::json!("C:\\p\\a.rs")); assert_eq!(hb["project"], serde_json::json!("C:\\p"));
     }
 
     // (b2b) POSIX-style path: the same fallback, separators must not matter
@@ -225,6 +232,19 @@ mod tests {
             .unwrap();
         let hb: serde_json::Value =
             serde_json::from_str(&to_heartbeat(&store, &raw, received_at).unwrap()).unwrap();
+        assert_eq!(hb["project"], serde_json::json!("C:\\p"));
+    }
+
+    // (b4) rider: editor match with an empty project falls through to the
+    // file-path/parent-dir fallback instead of sending project: ""
+    #[test]
+    fn editor_without_project_falls_back_to_file_path() {
+        let store = tmp_store("emptyproj");
+        let (raw, received_at) = stored_raw(&store);
+        heartbeats::insert(&store, r#"{"time":1764163200.0,"entity":"C:\\other\\z.rs","type":"file","project":"","user_agent":"w"}"#, AuthMethod::Basic, "k").unwrap();
+        store.conn.execute("UPDATE heartbeats SET received_at = 1764163200", []).unwrap();
+        let hb: serde_json::Value = serde_json::from_str(&to_heartbeat(&store, &raw, received_at).unwrap()).unwrap();
+        assert_eq!(hb["entity"], serde_json::json!("C:\\p\\a.rs"));
         assert_eq!(hb["project"], serde_json::json!("C:\\p"));
     }
 }
