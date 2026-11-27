@@ -8,6 +8,7 @@ pub mod live;
 pub mod report;
 pub mod status;
 pub mod export;
+pub mod explain;
 
 pub fn serve() {
     if let Err(e) = serve::run() {
@@ -40,6 +41,13 @@ pub fn report() {
 pub fn export() {
     if let Err(e) = export::run() {
         eprintln!("byline export: {e}");
+        std::process::exit(1);
+    }
+}
+
+pub fn explain(session_id: &str) {
+    if let Err(e) = explain::run(session_id) {
+        eprintln!("byline explain: {e}");
         std::process::exit(1);
     }
 }

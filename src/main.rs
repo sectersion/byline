@@ -11,8 +11,12 @@ fn main() {
         Some("report") => byline::cli::report(),
         Some("export") => byline::cli::export(),
         Some("status") => byline::cli::status(),
+        Some("explain") => {
+            let session_id = args.get(1).cloned().unwrap_or_default();
+            byline::cli::explain(&session_id);
+        }
         _ => {
-            eprintln!("usage: byline <serve|setup|unsetup|report|export|status>");
+            eprintln!("usage: byline <serve|setup|unsetup|report|export|status|explain> [session-id]");
             exit(2);
         }
     }
