@@ -53,6 +53,34 @@ pub fn drain(store: &Arc<Mutex<Store>>, cfg: Option<ForwardConfig>, limit: usize
     forwarded
 }
 
+/// FIX-004: forward one non-heartbeat request to upstream verbatim.
+/// Local `/api/v1` prefix is dropped so the path lands under the configured
+/// base (which already carries the upstream version prefix). Authenticated
+/// with the upstream key, not the caller's header: the local key may differ,
+/// and upstream would reject it. Errors -> caller falls back to 404.
+pub fn proxy(cfg: &ForwardConfig, method: &str, path_and_query: &str, body: &[u8]) -> Result<(u16, String), String> {
+    let rest = path_and_query.strip_prefix("/api/v1").unwrap_or(path_and_query);
+    let url = format!("{}{}", cfg.api_url.trim_end_matches('/'), rest);
+    let auth = format!("Basic {}", b64(&cfg.api_key));
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(std::time::Duration::from_secs(5)))
+        .timeout_global(Some(std::time::Duration::from_secs(15)))
+        .build()
+        .into();
+    // ureq 3 only has named-method builders; WakaTime endpoints are GET/POST.
+    let result = match method {
+        "GET" => agent.get(&url).header("Authorization", &auth).call(),
+        "POST" => agent.post(&url).header("Authorization", &auth).send(body),
+        "DELETE" => agent.delete(&url).header("Authorization", &auth).call(),
+        "HEAD" => agent.head(&url).header("Authorization", &auth).call(),
+        _ => return Err(format!("unsupported method {method}")),
+    };
+    let mut resp = result.map_err(|e| e.to_string())?;
+    let status = resp.status().as_u16();
+    let text = resp.body_mut().read_to_string().unwrap_or_default();
+    Ok((status, text))
+}
+
 fn failures(s: &Store) -> u32 {
     s.conn
         .query_row("SELECT CAST(value AS INTEGER) FROM config WHERE key = 'forward_failures'", [], |r| r.get::<_, String>(0))

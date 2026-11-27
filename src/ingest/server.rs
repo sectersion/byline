@@ -53,32 +53,51 @@ fn handle(mut req: tiny_http::Request, store: &Arc<Mutex<Store>>, expected_key: 
         b
     };
 
-    let (code, resp) = {
-        let s = store.lock().expect("lock");
-        match (req.method().as_str(), path.as_str()) {
-            ("POST", p) if p == BULK || p == SINGLE => match handle_body(&body, &s, auth) {
-                super::IngestOutcome::Stored(n) => {
-                    drop(s);
-                    kick(store);
-                    let responses = serde_json::to_string(
-                        &(0..n).map(|_| serde_json::json!([serde_json::json!({}), 201])).collect::<Vec<_>>(),
-                    )
-                    .expect("serialize ack");
-                    (201, format!(r#"{{"responses":{responses}}}"#))
-                }
-                super::IngestOutcome::BadRequest(msg) => {
-                    write_debug(&body);
-                    (400, format!(r#"{{"error":"malformed body: {msg}"}}"#))
-                }
-            },
-            ("GET", p) if p == CURRENT => (200, r#"{"data":{"username":"byline-local"}}"#.to_string()),
-            _ => {
-                let _ = s.conn.execute(
-                    "INSERT INTO unknown_paths (path, method, hit_at) VALUES (?, ?, strftime('%s','now'))",
-                    rusqlite::params![path, req.method().as_str()],
-                );
-                (404, r#"{"error":"not found"}"#.to_string())
+    let method = req.method().as_str();
+    let owned = (method == "POST" && (path == BULK || path == SINGLE)) || (method == "GET" && path == CURRENT);
+
+    let (code, resp) = if owned {
+        let (code, resp) = {
+            let s = store.lock().expect("lock");
+            match (method, path.as_str()) {
+                ("POST", p) if p == BULK || p == SINGLE => match handle_body(&body, &s, auth) {
+                    super::IngestOutcome::Stored(n) => {
+                        drop(s);
+                        kick(store);
+                        let responses = serde_json::to_string(
+                            &(0..n).map(|_| serde_json::json!([serde_json::json!({}), 201])).collect::<Vec<_>>(),
+                        )
+                        .expect("serialize ack");
+                        (201, format!(r#"{{"responses":{responses}}}"#))
+                    }
+                    super::IngestOutcome::BadRequest(msg) => {
+                        write_debug(&body);
+                        (400, format!(r#"{{"error":"malformed body: {msg}"}}"#))
+                    }
+                },
+                ("GET", _) => (200, r#"{"data":{"username":"byline-local"}}"#.to_string()),
+                _ => unreachable!("owned implies heartbeat POST or GET current"),
             }
+        };
+        (code, resp)
+    } else {
+        // FIX-004: not ours -> proxy upstream verbatim, status passthrough.
+        // Still recorded as a diagnostic row. No upstream configured (local
+        // only) or upstream down -> 404 as before; never blocks the store.
+        {
+            let s = store.lock().expect("lock");
+            let _ = s.conn.execute(
+                "INSERT INTO unknown_paths (path, method, hit_at) VALUES (?, ?, strftime('%s','now'))",
+                rusqlite::params![path, method],
+            );
+        }
+        let cfg = super::forward::ForwardConfig::from_store(&store.lock().unwrap());
+        match cfg {
+            Some(cfg) => match super::forward::proxy(&cfg, method, &url, &body) {
+                Ok((up_code, text)) => (up_code, text),
+                Err(_) => (404, r#"{"error":"not found"}"#.to_string()),
+            },
+            None => (404, r#"{"error":"not found"}"#.to_string()),
         }
     };
 
@@ -226,6 +245,76 @@ mod tests {
         assert_eq!(heartbeats::unforwarded(&s, 10).unwrap().len(), 0);
         let dbg = crate::cli::serve::home_dir().join(".byline/debug");
         assert!(dbg.join("last-bad-body.json").exists(), "debug file missing");
+    }
+
+    /// Stub upstream for the passthrough test: reads one request, records the
+    /// raw wire text, replies with a distinctive status/body.
+    fn stub_proxy_upstream(port: u16) -> std::thread::JoinHandle<String> {
+        use std::net::TcpListener;
+        std::thread::spawn(move || {
+            let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            let mut s = loop {
+                match listener.accept() {
+                    Ok((s, _)) => break s,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(_) => panic!("stub accept failed"),
+                }
+                if std::time::Instant::now() >= deadline {
+                    panic!("client never connected within 15s");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            };
+            listener.set_nonblocking(false).ok();
+            s.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 8192];
+            loop {
+                let n = s.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 17\r\n\r\n{\"upstream\":true}");
+            String::from_utf8_lossy(&buf).into_owned()
+        })
+    }
+
+    #[test]
+    fn unknown_path_proxied_to_upstream_status_passthrough() {
+        let (store, _db) = test_store("proxypass");
+        {
+            let s = store.lock().unwrap();
+            s.conn
+                .execute("INSERT INTO config (key, value) VALUES ('upstream_api_url', 'http://127.0.0.1:19905/api/hackatime/v1')", [])
+                .unwrap();
+            s.conn
+                .execute("INSERT INTO config (key, value) VALUES ('upstream_api_key', 'up-key')", [])
+                .unwrap();
+        }
+        let th = stub_proxy_upstream(19905);
+        start(19878, store.clone(), None);
+        let raw = "GET /api/v1/users/current/durations?date=2026-01-01 HTTP/1.1\r\nHost: x\r\nAuthorization: Basic a2V5LXV1aWQ=\r\n\r\n";
+        let (code, resp) = send(19878, &raw);
+        let got = th.join().unwrap();
+        // proxied with method and query; local /api/v1 prefix replaced by the
+        // upstream base's own version prefix
+        assert!(
+            got.starts_with("GET /api/hackatime/v1/users/current/durations?date=2026-01-01"),
+            "req={got}"
+        );
+        let got_lower = got.to_lowercase();
+        assert!(got_lower.contains("authorization: basic"), "auth header arrived, req={got}");
+        // caller sees the upstream status and body unmodified
+        assert_eq!(code, 200, "upstream status passthrough");
+        assert_eq!(resp, r#"{"upstream":true}"#);
+        let n: i64 = store.lock().unwrap().conn.query_row("SELECT count(*) FROM unknown_paths", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "diagnostic row still recorded");
     }
 
     #[test]
