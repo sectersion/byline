@@ -1,6 +1,7 @@
 // heartbeat endpoint + auth
 
 pub mod auth;
+pub mod forward;
 pub mod server;
 
 use crate::store::Store;
@@ -30,7 +31,6 @@ impl AuthResult {
 pub enum IngestOutcome {
     Stored(usize),      // number of heartbeats stored
     BadRequest(String), // complaint
-    NotFound,
 }
 
 /// Handles one parsed request body for the heartbeat endpoints.

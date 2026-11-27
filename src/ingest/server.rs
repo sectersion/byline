@@ -11,10 +11,26 @@ const CURRENT: &str = "/api/v1/users/current";
 pub fn run(port: u16, store: Arc<Mutex<Store>>) -> ! {
     let addr = format!("127.0.0.1:{port}");
     let server = tiny_http::Server::http(&addr).expect("bind 127.0.0.1");
+    // slow periodic drain (30s) so rows flush even without new requests
+    {
+        let store = store.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            kick(&store);
+        });
+    }
     loop {
         let req = server.recv().expect("recv");
         handle(req, &store);
     }
+}
+
+fn kick(store: &Arc<Mutex<Store>>) {
+    let store = store.clone();
+    std::thread::spawn(move || {
+        let cfg = { let s = store.lock().unwrap(); super::forward::ForwardConfig::from_store(&s) };
+        super::forward::drain(&store, cfg, 100);
+    });
 }
 
 fn handle(mut req: tiny_http::Request, store: &Arc<Mutex<Store>>) {
@@ -28,11 +44,13 @@ fn handle(mut req: tiny_http::Request, store: &Arc<Mutex<Store>>) {
         b
     };
 
-    let (code, resp) = match (req.method().as_str(), path.as_str()) {
-        ("POST", p) if p == BULK || p == SINGLE => {
-            let store = &mut store.lock().expect("lock");
-            match handle_body(&body, store, auth) {
+    let (code, resp) = {
+        let s = store.lock().expect("lock");
+        match (req.method().as_str(), path.as_str()) {
+            ("POST", p) if p == BULK || p == SINGLE => match handle_body(&body, &s, auth) {
                 super::IngestOutcome::Stored(n) => {
+                    drop(s);
+                    kick(store);
                     let responses = serde_json::to_string(
                         &(0..n).map(|_| serde_json::json!([serde_json::json!({}), 201])).collect::<Vec<_>>(),
                     )
@@ -43,17 +61,15 @@ fn handle(mut req: tiny_http::Request, store: &Arc<Mutex<Store>>) {
                     write_debug(&body);
                     (400, format!(r#"{{"error":"malformed body: {msg}"}}"#))
                 }
-                super::IngestOutcome::NotFound => unreachable!(),
+            },
+            ("GET", p) if p == CURRENT => (200, r#"{"data":{"username":"byline-local"}}"#.to_string()),
+            _ => {
+                let _ = s.conn.execute(
+                    "INSERT INTO unknown_paths (path, method, hit_at) VALUES (?, ?, strftime('%s','now'))",
+                    rusqlite::params![path, req.method().as_str()],
+                );
+                (404, r#"{"error":"not found"}"#.to_string())
             }
-        }
-        ("GET", p) if p == CURRENT => (200, r#"{"data":{"username":"byline-local"}}"#.into()),
-        _ => {
-            let store = &mut store.lock().expect("lock");
-            let _ = store.conn.execute(
-                "INSERT INTO unknown_paths (path, method, hit_at) VALUES (?, ?, strftime('%s','now'))",
-                rusqlite::params![path, req.method().as_str()],
-            );
-            (404, r#"{"error":"not found"}"#.into())
         }
     };
 
