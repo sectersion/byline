@@ -3,6 +3,7 @@
 // FEAT-008: also installs the OpenCode plugin to ~/.config/opencode/plugins/byline.ts.
 
 use super::serve::home_dir;
+use super::setup::{ok, plain, warn};
 use std::io::IsTerminal;
 
 const HOOK_SCRIPT: &str = include_str!("../../plugin/claude-code/claude-hook.mjs");
@@ -14,7 +15,7 @@ pub fn run(skip: bool) -> Result<(), String> {
         return Ok(());
     }
     if !claude_installed() && !opencode_installed() {
-        println!("neither claude code nor opencode found — skipping hook install");
+        warn("neither claude code nor opencode found — skipping hook install");
         return Ok(());
     }
 
@@ -22,7 +23,7 @@ pub fn run(skip: bool) -> Result<(), String> {
     if claude_installed() {
         // prompt only on a real terminal; non-tty (scripts, tests) proceeds
         if std::io::stdin().is_terminal() && !confirmed_claude() {
-            println!("skipped claude hook");
+            plain("skipped claude hook");
             // still fall through to opencode below
         } else {
             let dir = home_dir().join(".byline");
@@ -30,14 +31,14 @@ pub fn run(skip: bool) -> Result<(), String> {
             let script = dir.join(SCRIPT_NAME);
             if std::fs::read_to_string(&script).ok().as_deref() != Some(HOOK_SCRIPT) {
                 std::fs::write(&script, HOOK_SCRIPT).map_err(|e| e.to_string())?;
-                println!("installed {}", script.display());
+                ok(&format!("installed {}", script.display()));
             }
 
             let settings = home_dir().join(".claude").join("settings.json");
             std::fs::create_dir_all(settings.parent().unwrap()).map_err(|e| e.to_string())?;
             let old = std::fs::read_to_string(&settings).unwrap_or_default();
             if old.contains(SCRIPT_NAME) {
-                println!("claude hook already installed ({})", settings.display());
+                plain(&format!("claude hook already installed ({})", settings.display()));
                 // still fall through to opencode below
             } else {
                 let mut v: serde_json::Value = if old.trim().is_empty() {
@@ -57,7 +58,7 @@ pub fn run(skip: bool) -> Result<(), String> {
                     }));
                 let out = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
                 std::fs::write(&settings, out + "\n").map_err(|e| e.to_string())?;
-                println!("installed {} (PostToolUse -> byline hook)", settings.display());
+                ok(&format!("installed {} (PostToolUse -> byline hook)", settings.display()));
             }
         }
     }
@@ -65,7 +66,7 @@ pub fn run(skip: bool) -> Result<(), String> {
     // --- OpenCode plugin install ---
     if opencode_installed() {
         if std::io::stdin().is_terminal() && !confirmed_openencode() {
-            println!("skipped opencode plugin");
+            plain("skipped opencode plugin");
             // still return Ok(()) below
         } else {
             let opencode_dir = home_dir().join(".config").join("opencode");
@@ -73,10 +74,10 @@ pub fn run(skip: bool) -> Result<(), String> {
             std::fs::create_dir_all(&plugins_dir).map_err(|e| e.to_string())?;
             let plugin_path = plugins_dir.join("byline.ts");
             if plugin_path.exists() {
-                println!("opencode plugin already installed ({})", plugin_path.display());
+                plain(&format!("opencode plugin already installed ({})", plugin_path.display()));
             } else {
                 std::fs::write(&plugin_path, OPENCODE_PLUGIN).map_err(|e| e.to_string())?;
-                println!("installed {} (opencode plugin -> byline hook)", plugin_path.display());
+                ok(&format!("installed {} (opencode plugin -> byline hook)", plugin_path.display()));
             }
         }
     }
