@@ -62,6 +62,40 @@ pub fn insert(store: &Store, event: &HookEvent, hook_source: &str) -> Result<i64
     Ok(store.conn.last_insert_rowid())
 }
 
+/// A queued agent row as the drain sees it.
+pub struct AgentRow {
+    pub id: i64,
+    pub raw: String,
+    pub received_at: i64,
+    pub hook_source: String,
+}
+
+pub fn unforwarded(store: &Store, limit: usize) -> Result<Vec<AgentRow>, rusqlite::Error> {
+    let mut stmt = store.conn.prepare(
+        "SELECT id, raw, received_at, hook_source FROM agent_heartbeats
+         WHERE forwarded_at IS NULL ORDER BY id LIMIT ?",
+    )?;
+    let rows = stmt
+        .query_map([limit as i64], |r| {
+            Ok(AgentRow {
+                id: r.get(0)?,
+                raw: r.get(1)?,
+                received_at: r.get(2)?,
+                hook_source: r.get(3)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub fn mark_forwarded(store: &Store, id: i64) -> Result<(), rusqlite::Error> {
+    store.conn.execute(
+        "UPDATE agent_heartbeats SET forwarded_at = strftime('%s','now') WHERE id = ?",
+        [id],
+    )?;
+    Ok(())
+}
+
 /// Malformed/failed hook events are counted here (never 4xx to the agent).
 pub fn bump_hook_errors(store: &Store) {
     let _ = store.conn.execute(

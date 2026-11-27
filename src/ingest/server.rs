@@ -1,7 +1,7 @@
 // tiny_http listener + path dispatch (a match, no router abstraction)
 
 use super::{handle_body, AuthResult};
-use crate::store::{heartbeats, Store};
+use crate::store::Store;
 use std::sync::{Arc, Mutex};
 
 const BULK: &str = "/api/v1/users/current/heartbeats.bulk";
@@ -30,7 +30,8 @@ fn kick(store: &Arc<Mutex<Store>>) {
     let store = store.clone();
     std::thread::spawn(move || {
         let cfg = { let s = store.lock().unwrap(); super::forward::ForwardConfig::from_store(&s) };
-        super::forward::drain(&store, cfg, 100);
+        super::forward::drain(&store, cfg.clone(), 100, super::forward::Table::Heartbeats);
+        super::forward::drain(&store, cfg.clone(), 100, super::forward::Table::AgentHeartbeats);
     });
 }
 
@@ -134,6 +135,7 @@ impl AuthResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::heartbeats;
     use std::io::{Read, Write};
     use std::net::TcpStream;
     use std::sync::{Arc, Mutex};

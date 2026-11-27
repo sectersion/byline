@@ -1,9 +1,18 @@
 // transparent drain: post unforwarded rows to their original api_url with
 // their original key; 2xx -> forwarded_at; backoff 2^n capped 3600s in config.
 
-use crate::store::{heartbeats, Store};
+use crate::store::{agent_heartbeats, heartbeats, Store};
 use std::sync::{Arc, Mutex};
 
+/// Which queue to drain. Agent rows are composed into WakaTime heartbeats
+/// (hooks::compose) before they are sent; editor rows go as stored.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Table {
+    Heartbeats,
+    AgentHeartbeats,
+}
+
+#[derive(Clone)]
 pub struct ForwardConfig {
     pub api_url: String, // full base incl. version prefix, e.g. https://hackatime.../api/hackatime/v1
     pub api_key: String,
@@ -23,22 +32,57 @@ pub fn backoff_secs(failures: u32) -> u64 {
     15u64.saturating_mul(1u64 << failures.min(8)).min(3600)
 }
 
-/// Drains up to `limit` unforwarded rows. Returns count forwarded.
+/// Drains up to `limit` unforwarded rows from `table`. Returns count forwarded.
 /// Config missing -> no-op (nothing configured yet). Never errors upward.
-pub fn drain(store: &Arc<Mutex<Store>>, cfg: Option<ForwardConfig>, limit: usize) -> usize {
+/// Backoff state (config `forward_failures`) is shared across tables: a
+/// failing upstream stalls both queues together, which is the simple truth
+/// of a shared connection budget.
+pub fn drain(store: &Arc<Mutex<Store>>, cfg: Option<ForwardConfig>, limit: usize, table: Table) -> usize {
     let Some(cfg) = cfg else { return 0 };
-    let rows = {
+    let rows: Vec<(i64, String, i64)> = {
         let s = store.lock().unwrap();
-        heartbeats::unforwarded(&s, limit).unwrap_or_default()
+        match table {
+            Table::Heartbeats => heartbeats::unforwarded(&s, limit)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|r| (r.id, r.raw, 0))
+                .collect(),
+            Table::AgentHeartbeats => agent_heartbeats::unforwarded(&s, limit)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|r| (r.id, r.raw, r.received_at))
+                .collect(),
+        }
     };
     let s = store.lock().unwrap();
     let mut forwarded = 0usize;
-    for row in rows {
+    for (id, raw, received_at) in rows {
+        // agent rows are composed from normalized fields at send time
+        let body = match table {
+            Table::Heartbeats => raw,
+            Table::AgentHeartbeats => match crate::hooks::compose::to_heartbeat(&s, &raw, received_at) {
+                Ok(body) => body,
+                Err(_) => {
+                    // malformed stored row: count it and drop it from the
+                    // queue — a bad row must not block the queue forever
+                    let _ = agent_heartbeats::mark_forwarded(&s, id);
+                    agent_heartbeats::bump_hook_errors(&s);
+                    continue;
+                }
+            },
+        };
         // bulk path appends bare paths to the base
         let url = format!("{}/users/current/heartbeats.bulk", cfg.api_url.trim_end_matches('/'));
-        match post_one(&url, &cfg.api_key, &row.raw) {
+        match post_one(&url, &cfg.api_key, &body) {
             Ok(()) => {
-                let _ = heartbeats::mark_forwarded(&s, row.id);
+                match table {
+                    Table::Heartbeats => {
+                        let _ = heartbeats::mark_forwarded(&s, id);
+                    }
+                    Table::AgentHeartbeats => {
+                        let _ = agent_heartbeats::mark_forwarded(&s, id);
+                    }
+                }
                 forwarded += 1;
                 set_failures(&s, 0);
             }
@@ -210,7 +254,7 @@ mod tests {
         let id = heartbeats::insert(&store.lock().unwrap(), r#"{"time":1.0,"entity":"e","type":"file","user_agent":"u"}"#, crate::store::AuthMethod::Basic, "fwd-key").unwrap();
         let th = stub_upstream(19901, true);
         let cfg = ForwardConfig { api_url: "http://127.0.0.1:19901/api/hackatime/v1".into(), api_key: "fwd-key".into() };
-        let n = drain(&store, Some(cfg), 10);
+        let n = drain(&store, Some(cfg), 10, Table::Heartbeats);
         let body = th.join().unwrap();
         assert_eq!(n, 1);
         assert!(body.starts_with('[') && body.contains(r#""time":1.0"#), "body={body}");
@@ -228,7 +272,7 @@ mod tests {
         drop(s);
         // port with nothing listening (refused)
         let cfg = ForwardConfig { api_url: "http://127.0.0.1:1/api/v1".into(), api_key: "k".into() };
-        let n = drain(&store, Some(cfg), 10);
+        let n = drain(&store, Some(cfg), 10, Table::Heartbeats);
         assert_eq!(n, 0);
         assert_eq!(heartbeats::unforwarded(&store.lock().unwrap(), 10).unwrap().len(), 1);
     }
@@ -237,7 +281,7 @@ mod tests {
     fn no_config_is_noop() {
         let store = test_store("nocfg");
         heartbeats::insert(&store.lock().unwrap(), "{}", crate::store::AuthMethod::Basic, "k").unwrap();
-        assert_eq!(drain(&store, None, 10), 0);
+        assert_eq!(drain(&store, None, 10, Table::Heartbeats), 0);
         assert_eq!(heartbeats::unforwarded(&store.lock().unwrap(), 10).unwrap().len(), 1);
     }
 
@@ -301,7 +345,7 @@ mod tests {
             }
         });
         let cfg = ForwardConfig { api_url: "http://127.0.0.1:19903/api/v1".into(), api_key: "k".into() };
-        let n = drain(&store, Some(cfg), 10);
+        let n = drain(&store, Some(cfg), 10, Table::Heartbeats);
         th.join().unwrap(); // surfaces a stub panic instead of silently passing
         // two forwarded, third stays queued
         assert!(n >= 2, "n={n}");
@@ -310,5 +354,44 @@ mod tests {
         assert!(queued.len() <= 1, "at most the third row queued, got {}", queued.len());
         // restart: re-drain (stub accepts again) — the first two never re-send
         // because forwarded_at was set before the next row was attempted.
+    }
+
+    /// FEAT-002: agent rows drain as composed WakaTime heartbeats; forwarded
+    /// rows are never re-sent on restart (same pattern as forwards_to_stub_and_marks).
+    #[test]
+    fn agent_rows_drain_composed_and_never_resend() {
+        let store = test_store("agent-drain");
+        {
+            let s = store.lock().unwrap();
+            crate::store::agent_heartbeats::insert(&s, &agent_ev(), crate::store::agent_heartbeats::HOOK_SOURCE).unwrap();
+        }
+        let th = stub_upstream(19907, true);
+        let cfg = ForwardConfig { api_url: "http://127.0.0.1:19907/api/hackatime/v1".into(), api_key: "k".into() };
+        let n = drain(&store, Some(cfg), 10, Table::AgentHeartbeats);
+        let body = th.join().unwrap();
+        assert_eq!(n, 1);
+        // composed upstream: category, user_agent, ai_* — not the stored raw
+        assert!(body.contains(r#""category":"ai coding""#), "body={body}");
+        assert!(body.contains("byline/"), "body={body}");
+        assert!(body.contains("(claude-code)"), "body={body}");
+        assert!(body.contains("claude-sonnet-4-5"), "body={body}");
+        assert!(!body.contains("event_id"), "stored raw leaked upstream: body={body}");
+        // restart: drain again — nothing left, nothing re-sent
+        let cfg2 = ForwardConfig { api_url: "http://127.0.0.1:1/api/v1".into(), api_key: "k".into() };
+        assert_eq!(drain(&store, Some(cfg2), 10, Table::AgentHeartbeats), 0);
+        assert_eq!(crate::store::agent_heartbeats::unforwarded(&store.lock().unwrap(), 10).unwrap().len(), 0);
+    }
+
+    fn agent_ev() -> crate::store::agent_heartbeats::HookEvent {
+        crate::store::agent_heartbeats::HookEvent {
+            event_id: "ev1".into(),
+            timestamp: Some(1_764_163_200),
+            tool_name: "Edit".into(),
+            file_path: Some("C:\\p\\a.rs".into()),
+            ai_model: Some("claude-sonnet-4-5".into()),
+            ai_input_tokens: Some(10),
+            ai_output_tokens: Some(20),
+            ai_line_changes: Some(3),
+        }
     }
 }
