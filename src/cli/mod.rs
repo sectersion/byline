@@ -3,6 +3,7 @@
 pub mod serve;
 pub mod setup;
 pub mod setup_plugin;
+pub mod live;
 
 pub mod report;
 pub mod status;
