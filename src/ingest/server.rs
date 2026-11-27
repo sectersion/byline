@@ -8,7 +8,7 @@ const BULK: &str = "/api/v1/users/current/heartbeats.bulk";
 const SINGLE: &str = "/api/v1/users/current/heartbeats";
 const CURRENT: &str = "/api/v1/users/current";
 
-pub fn run(port: u16, store: Arc<Mutex<Store>>) -> ! {
+pub fn run(port: u16, store: Arc<Mutex<Store>>, expected_key: Option<String>) -> ! {
     let addr = format!("127.0.0.1:{port}");
     let server = tiny_http::Server::http(&addr).expect("bind 127.0.0.1");
     // slow periodic drain (30s) so rows flush even without new requests
@@ -21,7 +21,7 @@ pub fn run(port: u16, store: Arc<Mutex<Store>>) -> ! {
     }
     loop {
         let req = server.recv().expect("recv");
-        handle(req, &store);
+        handle(req, &store, &expected_key);
     }
 }
 
@@ -33,11 +33,20 @@ fn kick(store: &Arc<Mutex<Store>>) {
     });
 }
 
-fn handle(mut req: tiny_http::Request, store: &Arc<Mutex<Store>>) {
+fn handle(mut req: tiny_http::Request, store: &Arc<Mutex<Store>>, expected_key: &Option<String>) {
     let url = req.url().to_string();
     let path = url.split('?').next().unwrap_or("").to_string();
     let query = url.split_once('?').map(|(_, q)| q.to_string());
     let auth = AuthResult::parse(&req, query.as_deref());
+    // Only the user's own key (read from ~/.wakatime.cfg at startup) may
+    // write heartbeats. None expected -> accept-any fallback, never brick.
+    if let Some(expected) = expected_key {
+        if auth.key() != Some(expected) {
+            // refuse without reading the body or storing anything
+            respond(req, 401, r#"{"error":"invalid api_key"}"#.to_string());
+            return;
+        }
+    }
     let body = {
         let mut b = Vec::new();
         let _ = std::io::Read::read_to_end(req.as_reader(), &mut b);
@@ -73,6 +82,10 @@ fn handle(mut req: tiny_http::Request, store: &Arc<Mutex<Store>>) {
         }
     };
 
+    respond(req, code, resp);
+}
+
+fn respond(req: tiny_http::Request, code: u16, resp: String) {
     let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
     let mut r = tiny_http::Response::from_string(resp).with_status_code(code);
     r.add_header(header);
@@ -112,13 +125,13 @@ mod tests {
         (Arc::new(Mutex::new(Store::open(&db).unwrap())), db)
     }
 
-    fn start(port: u16, store: Arc<Mutex<Store>>) {
+    fn start(port: u16, store: Arc<Mutex<Store>>, expected_key: Option<String>) {
         std::thread::spawn(move || {
             let addr = format!("127.0.0.1:{port}");
             let server = tiny_http::Server::http(&addr).unwrap();
             loop {
                 let req = server.recv().expect("recv");
-                handle(req, &store);
+                handle(req, &store, &expected_key);
             }
         });
         // wait for the listener to actually accept — spawned thread may lose
@@ -150,11 +163,24 @@ mod tests {
 
     const BULK_PATH: &str = "/api/v1/users/current/heartbeats.bulk";
     const AUTH: &str = "Authorization: Basic a2V5LXV1aWQ=\r\n"; // base64("key-uuid")
+    const WRONG: &str = "Authorization: Basic c3Bvb2Yta2V5\r\n"; // base64("spoof-key")
+
+    #[test]
+    fn wrong_key_is_401_no_rows() {
+        let (store, _db) = test_store("wrongkey");
+        start(19877, store.clone(), Some("key-uuid".to_string()));
+        let body = r#"[{"time":1.0,"entity":"e","type":"file","user_agent":"u"}]"#;
+        let raw = format!("POST {BULK_PATH} HTTP/1.1\r\nHost: x\r\n{WRONG}Content-Length: {}\r\n\r\n{body}", body.len());
+        let (code, resp) = send(19877, &raw);
+        assert_eq!(code, 401, "code={code}");
+        assert!(resp.contains("invalid api_key"), "resp={resp}");
+        assert_eq!(heartbeats::unforwarded(&store.lock().unwrap(), 10).unwrap().len(), 0);
+    }
 
     #[test]
     fn bulk_of_three_stored_and_acked_in_order() {
         let (store, db) = test_store("bulk3");
-        start(19871, store.clone());
+        start(19871, store.clone(), None);
         let hb = |t: f64| format!(r#"{{"time":{t},"entity":"C:\\p\\a.rs","type":"file","user_agent":"w/1.0"}}"#);
         let body = format!("[{},{},{}]", hb(1.0), hb(2.0), hb(3.0));
         let raw = format!(
@@ -172,7 +198,7 @@ mod tests {
     #[test]
     fn single_object_stored_and_acked() {
         let (store, db) = test_store("single");
-        start(19872, store.clone());
+        start(19872, store.clone(), None);
         let body = r#"{"time":1.0,"entity":"C:\\p\\b.rs","type":"file","user_agent":"w/1.0"}"#;
         let raw = format!(
             "POST /api/v1/users/current/heartbeats HTTP/1.1\r\nHost: x\r\n{AUTH}Content-Length: {}\r\n\r\n{body}",
@@ -187,7 +213,7 @@ mod tests {
     #[test]
     fn malformed_body_400_no_row() {
         let (store, db) = test_store("bad");
-        start(19873, store.clone());
+        start(19873, store.clone(), None);
         let raw = format!(
             "POST {BULK_PATH} HTTP/1.1\r\nHost: x\r\n{AUTH}Content-Length: 5\r\n\r\nnot{{!");
         let (code, _) = send(19873, &raw);
@@ -201,7 +227,7 @@ mod tests {
     #[test]
     fn unknown_path_404_and_recorded() {
         let (store, db) = test_store("unknown");
-        start(19874, store.clone());
+        start(19874, store.clone(), None);
         let raw = "GET /api/v1/nope HTTP/1.1\r\nHost: x\r\n\r\n";
         let (code, _) = send(19874, &raw);
         assert_eq!(code, 404);
@@ -213,7 +239,7 @@ mod tests {
     #[test]
     fn keepalive_two_requests_one_connection() {
         let (store, _db) = test_store("keepalive");
-        start(19875, store.clone());
+        start(19875, store.clone(), None);
         let mut s = TcpStream::connect(("127.0.0.1", 19875)).unwrap();
         let req = |i: u32| {
             let body = format!(r#"[{{"time":{i}.0,"entity":"e","type":"file","user_agent":"u"}}]"#);
@@ -246,7 +272,7 @@ mod tests {
     #[test]
     fn chunked_body_parsed() {
         let (store, db) = test_store("chunked");
-        start(19876, store.clone());
+        start(19876, store.clone(), None);
         let part1 = r#"[{"time":9.0,"entity":"c.rs""#;
         let part2 = r#","type":"file","user_agent":"u"}]"#;
         let raw = format!(

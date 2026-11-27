@@ -114,7 +114,7 @@ fn post_bulk(port: u16, n: u32) -> u16 {
         (0..n).map(|i| format!(r#"{{"time":{i}.0,"entity":"C:\\p\\src\\f{i}.rs","type":"file","user_agent":"w/1.0"}}"#)).collect::<Vec<_>>().join(",")
     );
     let req = format!(
-        "POST /api/v1/users/current/heartbeats.bulk HTTP/1.1\r\nHost: x\r\nAuthorization: Basic a2V5LXV1aWQ=\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "POST /api/v1/users/current/heartbeats.bulk HTTP/1.1\r\nHost: x\r\nAuthorization: Basic ZTJlLWtleQ==\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();

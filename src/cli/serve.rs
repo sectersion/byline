@@ -8,7 +8,11 @@ pub fn run() -> Result<(), String> {
         .and_then(|p| p.parse().ok())
         .unwrap_or(8787);
     let (store, _path) = crate::cli::status::open_store()?;
-    crate::ingest::server::run(port, Arc::new(Mutex::new(store)))
+    // the user's real key, read from the cfg setup manages; unreadable -> None
+    // (accept-any fallback, never brick)
+    let expected = std::fs::read_to_string(crate::cli::setup::wakatime_cfg()).ok()
+        .and_then(|c| crate::cli::setup::get_ini(&c, "api_key"));
+    crate::ingest::server::run(port, Arc::new(Mutex::new(store)), expected)
 }
 
 pub fn home_dir() -> std::path::PathBuf {
