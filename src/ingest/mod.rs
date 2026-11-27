@@ -1,5 +1,6 @@
 // heartbeat endpoint + auth
 
+pub mod agent_batch;
 pub mod auth;
 pub mod forward;
 pub mod server;

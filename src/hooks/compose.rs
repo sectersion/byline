@@ -12,20 +12,28 @@ pub const CATEGORY: &str = "ai coding";
 /// The ±30 min window (seconds) for matching an editor heartbeat.
 const MATCH_WINDOW: i64 = 1800;
 
+/// Hook events older than this (seconds) are stale replays: dropped at drain
+/// time — an old replay must not create fake activity.
+pub const STALE_SECS: i64 = 600;
+
+pub fn is_stale(received_at: i64) -> bool { now_secs() - received_at > STALE_SECS }
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64
+}
+
 /// Composes the WakaTime heartbeat JSON for one stored agent row.
 /// `raw`/`received_at` come straight from the agent_heartbeats row.
 pub fn to_heartbeat(store: &crate::store::Store, raw: &str, received_at: i64) -> Result<String, String> {
     let ev: serde_json::Value = serde_json::from_str(raw).map_err(|e| format!("bad agent row: {e}"))?;
     let file_path = ev.get("file_path").and_then(|x| x.as_str());
-    let (entity, project) = match match_editor(store, received_at) {
-        Some((entity, project)) => (Some(entity), Some(project)),
-        None => match file_path {
-            Some(p) => (
-                Some(p.to_string()),
-                parent_dir(p),
-            ),
-            None => (None, None),
-        },
+    // editor match wins unless it carries no project (empty string is not a
+    // project); then the file path's parent dir is the project.
+    let matched = match_editor(store, received_at).filter(|(_, p)| !p.is_empty());
+    let (entity, project) = match (matched, file_path) {
+        (Some((entity, project)), _) => (Some(entity), Some(project)),
+        (None, Some(p)) => (Some(p.to_string()), parent_dir(p)),
+        (None, None) => (None, None),
     };
     let mut hb = serde_json::Map::new();
     hb.insert("time".into(), json!(received_at as f64));
@@ -74,9 +82,9 @@ fn match_editor(store: &crate::store::Store, received_at: i64) -> Option<(String
         .conn
         .query_row(
             "SELECT raw FROM heartbeats
-             WHERE received_at BETWEEN ? - 1800 AND ? + 1800
+             WHERE received_at BETWEEN ? AND ?
              ORDER BY abs(received_at - ?), id LIMIT 1",
-            rusqlite::params![received_at, received_at, received_at],
+            rusqlite::params![received_at - MATCH_WINDOW, received_at + MATCH_WINDOW, received_at],
             |r| r.get(0),
         )
         .ok()?;
@@ -90,29 +98,11 @@ fn match_editor(store: &crate::store::Store, received_at: i64) -> Option<(String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{agent_heartbeats, heartbeats, AuthMethod, Store};
+    use crate::store::{agent_heartbeats, heartbeats, testutil, AuthMethod, Store};
 
-    fn tmp_store(name: &str) -> Store {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("byline-compose-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("byline.db");
-        std::fs::remove_file(&path).ok();
-        Store::open(&path).unwrap()
-    }
-
-    fn stored_raw(store: &Store) -> (String, i64) {
-        let ev = agent_heartbeats::HookEvent {
-            event_id: "e1".into(),
-            timestamp: Some(1_764_163_200),
-            tool_name: "Edit".into(),
-            file_path: Some("C:\\p\\a.rs".into()),
-            ai_model: Some("claude-sonnet-4-5".into()),
-            ai_input_tokens: Some(1234),
-            ai_output_tokens: Some(567),
-            ai_line_changes: Some(3),
-        };
-        let id = agent_heartbeats::insert(store, &ev, HOOK_SOURCE).unwrap();
+    /// Insert a stored agent row and hand back its raw + received_at.
+    fn stored_raw(store: &Store, ev: &agent_heartbeats::HookEvent) -> (String, i64) {
+        let id = agent_heartbeats::insert(store, ev, HOOK_SOURCE).unwrap();
         store
             .conn
             .query_row("SELECT raw, received_at FROM agent_heartbeats WHERE id = ?", [id], |r| {
@@ -121,20 +111,30 @@ mod tests {
             .unwrap()
     }
 
+    /// Store an editor heartbeat and pin its received_at (insert stamps 'now').
+    fn put_editor(store: &Store, raw: &str, received_at: i64) {
+        let id = heartbeats::insert(store, raw, AuthMethod::Basic, "k").unwrap();
+        store.conn.execute("UPDATE heartbeats SET received_at = ? WHERE id = ?", rusqlite::params![received_at, id]).unwrap();
+    }
+
+    fn composed(store: &Store, raw: &str, received_at: i64) -> serde_json::Value {
+        serde_json::from_str(&to_heartbeat(store, raw, received_at).unwrap()).unwrap()
+    }
+
     // (a) category/time/user_agent/ai_* and no prompt contents
     #[test]
     fn composed_shape() {
-        let store = tmp_store("shape");
-        let (raw, received_at) = stored_raw(&store);
-        let hb: serde_json::Value = serde_json::from_str(&to_heartbeat(&store, &raw, received_at).unwrap()).unwrap();
+        let store = testutil::tmp("shape");
+        let (raw, received_at) = stored_raw(&store, &agent_heartbeats::test_ev("e1", 1_764_163_200));
+        let hb = composed(&store, &raw, received_at);
         assert_eq!(hb["category"], serde_json::json!("ai coding"));
         assert!(hb["time"].as_f64().is_some(), "time is a float");
         assert_eq!(hb["time"].as_f64(), Some(1_764_163_200.0));
         assert!(hb["user_agent"].as_str().unwrap().starts_with("byline/"));
         assert!(hb["user_agent"].as_str().unwrap().contains("(claude-code)"));
         assert_eq!(hb["ai_model"], serde_json::json!("claude-sonnet-4-5"));
-        assert_eq!(hb["ai_input_tokens"], serde_json::json!(1234));
-        assert_eq!(hb["ai_output_tokens"], serde_json::json!(567));
+        assert_eq!(hb["ai_input_tokens"], serde_json::json!(10));
+        assert_eq!(hb["ai_output_tokens"], serde_json::json!(20));
         assert_eq!(hb["ai_line_changes"], serde_json::json!(3));
         // no prompt/contents: the shape only carries names and counts
         let s = serde_json::to_string(&hb).unwrap();
@@ -144,56 +144,28 @@ mod tests {
     // (b) editor heartbeat within ±30 min supplies entity/project
     #[test]
     fn matching_editor_supplies_entity_project() {
-        let store = tmp_store("editor");
-        let (raw, received_at) = stored_raw(&store);
-        let id = heartbeats::insert(
-            &store,
-            r#"{"time":1764163300.0,"entity":"C:\\p\\b.rs","type":"file","project":"p","user_agent":"wakatime/16"}"#,
-            AuthMethod::Basic,
-            "k",
-        )
-        .unwrap();
-        // insert stamps 'now'; align the row to the event's own clock
-        store.conn.execute("UPDATE heartbeats SET received_at = 1764163300 WHERE id = ?", [id]).unwrap();
-        let hb: serde_json::Value =
-            serde_json::from_str(&to_heartbeat(&store, &raw, received_at).unwrap()).unwrap();
+        let store = testutil::tmp("editor");
+        let (raw, received_at) = stored_raw(&store, &agent_heartbeats::test_ev("e1", 1_764_163_200));
+        put_editor(&store, r#"{"time":1764163300.0,"entity":"C:\\p\\b.rs","type":"file","project":"p","user_agent":"wakatime/16"}"#, 1_764_163_300);
+        let hb = composed(&store, &raw, received_at);
         assert_eq!(hb["entity"], serde_json::json!("C:\\p\\b.rs"));
         assert_eq!(hb["project"], serde_json::json!("p"));
     }
 
-    // (b2) no matching editor heartbeat -> file path entity, parent dir project
+    // (b2)/(b2b): no matching editor heartbeat -> file path entity, parent
+    // dir project — Windows and POSIX separators must behave the same.
     #[test]
     fn no_editor_falls_back_to_file_path() {
-        let store = tmp_store("fallback");
-        let (raw, received_at) = stored_raw(&store);
-        let hb: serde_json::Value =
-            serde_json::from_str(&to_heartbeat(&store, &raw, received_at).unwrap()).unwrap();
+        let store = testutil::tmp("fallback");
+        let (raw, received_at) = stored_raw(&store, &agent_heartbeats::test_ev("e1", 1_764_163_200));
+        let hb = composed(&store, &raw, received_at);
         assert_eq!(hb["entity"], serde_json::json!("C:\\p\\a.rs"));
         assert_eq!(hb["project"], serde_json::json!("C:\\p"));
-    }
-
-    // (b2b) POSIX-style path: the same fallback, separators must not matter
-    #[test]
-    fn posix_path_parent_dir() {
-        let store = tmp_store("posix");
-        let ev = agent_heartbeats::HookEvent {
-            event_id: "e2".into(),
-            timestamp: Some(1_764_163_200),
-            tool_name: "Edit".into(),
-            file_path: Some("/home/u/byline/src/main.rs".into()),
-            ai_model: Some("claude-sonnet-4-5".into()),
-            ai_input_tokens: Some(1234),
-            ai_output_tokens: Some(567),
-            ai_line_changes: Some(3),
-        };
-        let id = agent_heartbeats::insert(&store, &ev, HOOK_SOURCE).unwrap();
-        let (raw, received_at): (String, i64) = store
-            .conn
-            .query_row("SELECT raw, received_at FROM agent_heartbeats WHERE id = ?", [id], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
-            .unwrap();
-        let hb: serde_json::Value = serde_json::from_str(&to_heartbeat(&store, &raw, received_at).unwrap()).unwrap();
+        // POSIX-style path: same fallback, separators must not matter
+        let mut posix = agent_heartbeats::test_ev("e2", 1_764_163_200);
+        posix.file_path = Some("/home/u/byline/src/main.rs".into());
+        let (raw, received_at) = stored_raw(&store, &posix);
+        let hb = composed(&store, &raw, received_at);
         assert_eq!(hb["entity"], serde_json::json!("/home/u/byline/src/main.rs"));
         assert_eq!(hb["project"], serde_json::json!("/home/u/byline/src"));
     }
@@ -209,22 +181,22 @@ mod tests {
     // (b3) editor heartbeat outside the ±30 min window does not match
     #[test]
     fn stale_editor_ignored() {
-        let store = tmp_store("stale");
-        let (raw, received_at) = stored_raw(&store);
-        heartbeats::insert(
-            &store,
-            r#"{"time":1764163200.0,"entity":"C:\\other\\z.rs","type":"file","project":"other","user_agent":"w"}"#,
-            AuthMethod::Basic,
-            "k",
-        )
-        .unwrap();
-        // push the editor heartbeat's received_at 1 hour before the event
-        store
-            .conn
-            .execute("UPDATE heartbeats SET received_at = received_at - 3600", [])
-            .unwrap();
-        let hb: serde_json::Value =
-            serde_json::from_str(&to_heartbeat(&store, &raw, received_at).unwrap()).unwrap();
+        let store = testutil::tmp("stale");
+        let (raw, received_at) = stored_raw(&store, &agent_heartbeats::test_ev("e1", 1_764_163_200));
+        put_editor(&store, r#"{"time":1764163200.0,"entity":"C:\\other\\z.rs","type":"file","project":"other","user_agent":"w"}"#, 1_764_159_600);
+        let hb = composed(&store, &raw, received_at);
+        assert_eq!(hb["project"], serde_json::json!("C:\\p"));
+    }
+
+    // (b4) rider: editor match with an empty project falls through to the
+    // file-path/parent-dir fallback instead of sending project: ""
+    #[test]
+    fn editor_without_project_falls_back_to_file_path() {
+        let store = testutil::tmp("emptyproj");
+        let (raw, received_at) = stored_raw(&store, &agent_heartbeats::test_ev("e1", 1_764_163_200));
+        put_editor(&store, r#"{"time":1764163200.0,"entity":"C:\\other\\z.rs","type":"file","project":"","user_agent":"w"}"#, 1_764_163_200);
+        let hb = composed(&store, &raw, received_at);
+        assert_eq!(hb["entity"], serde_json::json!("C:\\p\\a.rs"));
         assert_eq!(hb["project"], serde_json::json!("C:\\p"));
     }
 }

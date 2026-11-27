@@ -73,8 +73,6 @@ pub fn handle(body: &[u8], store: &Store) -> (u16, String) {
 mod tests {
     use super::*;
     use crate::store::{agent_heartbeats, Store};
-    use std::io::{Read, Write};
-    use std::net::TcpStream;
     use std::sync::{Arc, Mutex};
 
     const FIXTURE: &str = include_str!("../../docs/fixtures/claude-code/post-tool-use.json");
@@ -94,46 +92,13 @@ mod tests {
     }
 
     fn tmp_store(name: &str) -> (Arc<Mutex<Store>>, std::path::PathBuf) {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("byline-hooks-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db = dir.join("byline.db");
-        std::fs::remove_file(&db).ok();
-        (Arc::new(Mutex::new(Store::open(&db).unwrap())), db)
+        let (store, db) = crate::store::testutil::tmp_path(name);
+        (Arc::new(Mutex::new(store)), db)
     }
 
+    // same tiny_http harness as ingest::server's tests — reuse it
     fn start(port: u16, store: Arc<Mutex<Store>>) {
-        std::thread::spawn(move || {
-            let addr = format!("127.0.0.1:{port}");
-            let server = tiny_http::Server::http(&addr).unwrap();
-            loop {
-                let req = server.recv().expect("recv");
-                crate::ingest::server::handle(req, &store, &None);
-            }
-        });
-        for _ in 0..50 {
-            if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        panic!("server on {port} never came up");
-    }
-
-    fn send(port: u16, raw: &str) -> (u16, String) {
-        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        s.write_all(raw.as_bytes()).unwrap();
-        s.shutdown(std::net::Shutdown::Write).unwrap();
-        let mut buf = String::new();
-        s.read_to_string(&mut buf).unwrap();
-        let status: u16 = buf
-            .lines()
-            .next()
-            .and_then(|l| l.split_whitespace().nth(1))
-            .and_then(|c| c.parse().ok())
-            .unwrap_or(0);
-        let body = buf.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
-        (status, body)
+        crate::ingest::server::tests::start(port, store, None);
     }
 
     fn post(port: u16, body: &str) -> (u16, String) {
@@ -141,7 +106,7 @@ mod tests {
             "POST /api/v1/hooks/claude HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
         );
-        send(port, &raw)
+        crate::ingest::server::tests::send(port, &raw)
     }
 
     fn hook_errors(store: &Store) -> i64 {

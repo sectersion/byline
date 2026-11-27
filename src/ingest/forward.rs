@@ -1,11 +1,10 @@
 // transparent drain: post unforwarded rows to their original api_url with
 // their original key; 2xx -> forwarded_at; backoff 2^n capped 3600s in config.
 
-use crate::store::{agent_heartbeats, heartbeats, Store};
+use crate::store::{heartbeats, Store};
 use std::sync::{Arc, Mutex};
 
-/// Which queue to drain. Agent rows are composed into WakaTime heartbeats
-/// (hooks::compose) before they are sent; editor rows go as stored.
+/// Which queue to drain. Agent rows are composed (hooks::compose) before send.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Table {
     Heartbeats,
@@ -32,64 +31,38 @@ pub fn backoff_secs(failures: u32) -> u64 {
     15u64.saturating_mul(1u64 << failures.min(8)).min(3600)
 }
 
-/// Drains up to `limit` unforwarded rows from `table`. Returns count forwarded.
-/// Config missing -> no-op (nothing configured yet). Never errors upward.
-/// Backoff state (config `forward_failures`) is shared across tables: a
-/// failing upstream stalls both queues together, which is the simple truth
-/// of a shared connection budget.
+/// Drains up to `limit` unforwarded rows from `table`; returns count forwarded.
+/// Config missing -> no-op. Never errors upward. Backoff state (config
+/// `forward_failures`) is shared across tables: one upstream, one budget.
 pub fn drain(store: &Arc<Mutex<Store>>, cfg: Option<ForwardConfig>, limit: usize, table: Table) -> usize {
     let Some(cfg) = cfg else { return 0 };
-    let rows: Vec<(i64, String, i64)> = {
-        let s = store.lock().unwrap();
-        match table {
-            Table::Heartbeats => heartbeats::unforwarded(&s, limit)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|r| (r.id, r.raw, 0))
-                .collect(),
-            Table::AgentHeartbeats => agent_heartbeats::unforwarded(&s, limit)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|r| (r.id, r.raw, r.received_at))
-                .collect(),
-        }
-    };
     let s = store.lock().unwrap();
+    match table {
+        Table::Heartbeats => drain_editor(&s, &cfg, limit),
+        // task 3: agent rows batch (<=100/POST, <=1 POST/30s) in agent_batch
+        Table::AgentHeartbeats => crate::ingest::agent_batch::drain_agent(&s, &cfg, limit),
+    }
+}
+
+/// Editor heartbeats go as stored, one row per POST, unbatched (unchanged).
+fn drain_editor(s: &Store, cfg: &ForwardConfig, limit: usize) -> usize {
+    let rows: Vec<(i64, String)> = heartbeats::unforwarded(s, limit)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| (r.id, r.raw))
+        .collect();
     let mut forwarded = 0usize;
-    for (id, raw, received_at) in rows {
-        // agent rows are composed from normalized fields at send time
-        let body = match table {
-            Table::Heartbeats => raw,
-            Table::AgentHeartbeats => match crate::hooks::compose::to_heartbeat(&s, &raw, received_at) {
-                Ok(body) => body,
-                Err(_) => {
-                    // malformed stored row: count it and drop it from the
-                    // queue — a bad row must not block the queue forever
-                    let _ = agent_heartbeats::mark_forwarded(&s, id);
-                    agent_heartbeats::bump_hook_errors(&s);
-                    continue;
-                }
-            },
-        };
+    for (id, raw) in rows {
         // bulk path appends bare paths to the base
         let url = format!("{}/users/current/heartbeats.bulk", cfg.api_url.trim_end_matches('/'));
-        match post_one(&url, &cfg.api_key, &body) {
+        match post_one(&url, &cfg.api_key, &raw) {
             Ok(()) => {
-                match table {
-                    Table::Heartbeats => {
-                        let _ = heartbeats::mark_forwarded(&s, id);
-                    }
-                    Table::AgentHeartbeats => {
-                        let _ = agent_heartbeats::mark_forwarded(&s, id);
-                    }
-                }
+                let _ = heartbeats::mark_forwarded(s, id);
                 forwarded += 1;
-                set_failures(&s, 0);
+                set_failures(s, 0);
             }
             Err(_) => {
-                let n = failures(&s) + 1;
-                set_failures(&s, n);
-                let _ = n;
+                set_failures(s, failures(s) + 1);
                 break; // backoff handled by caller pacing; stop this pass
             }
         }
@@ -125,7 +98,7 @@ pub fn proxy(cfg: &ForwardConfig, method: &str, path_and_query: &str, body: &[u8
     Ok((status, text))
 }
 
-fn failures(s: &Store) -> u32 {
+pub(crate) fn failures(s: &Store) -> u32 {
     s.conn
         .query_row("SELECT CAST(value AS INTEGER) FROM config WHERE key = 'forward_failures'", [], |r| r.get::<_, String>(0))
         .ok()
@@ -133,7 +106,7 @@ fn failures(s: &Store) -> u32 {
         .unwrap_or(0)
 }
 
-fn set_failures(s: &Store, n: u32) {
+pub(crate) fn set_failures(s: &Store, n: u32) {
     let _ = s.conn.execute(
         "INSERT INTO config (key, value) VALUES ('forward_failures', ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -141,10 +114,8 @@ fn set_failures(s: &Store, n: u32) {
     );
 }
 
-fn post_one(url: &str, key: &str, body: &str) -> Result<(), String> {
-    // one HTTP POST; body is a single heartbeat, sent as 1-element array? No:
-    // rows were stored per-element, so send a bare 1-element array to the
-    // bulk endpoint.
+pub(crate) fn post_one(url: &str, key: &str, body: &str) -> Result<(), String> {
+    // one POST to the bulk endpoint; the body goes out as one JSON array
     let payload = format!("[{body}]");
     let req = ureq::post(url).header("Authorization", &format!("Basic {}", b64(key)));
     let mut resp = req.send(payload.as_bytes()).map_err(|e| e.to_string())?;
@@ -173,22 +144,17 @@ fn b64(s: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
-    fn test_store(name: &str) -> Arc<Mutex<Store>> {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("byline-fwd-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db = dir.join("byline.db");
-        std::fs::remove_file(&db).ok();
-        Arc::new(Mutex::new(Store::open(&db).unwrap()))
+    pub(crate) fn test_store(name: &str) -> Arc<Mutex<Store>> {
+        Arc::new(Mutex::new(crate::store::testutil::tmp(name)))
     }
 
     /// accept() that never blocks past `deadline` (None instead of hanging).
-    fn accept_until(listener: &TcpListener, deadline: std::time::Instant) -> Option<std::net::TcpStream> {
+    pub(crate) fn accept_until(listener: &TcpListener, deadline: std::time::Instant) -> Option<std::net::TcpStream> {
         listener.set_nonblocking(true).unwrap();
         loop {
             match listener.accept() {
@@ -207,7 +173,7 @@ mod tests {
     }
 
     /// Headers + full body arrived on the wire?
-    fn request_complete(got: &str) -> bool {
+    pub(crate) fn request_complete(got: &str) -> bool {
         let Some((_, body)) = got.split_once("\r\n\r\n") else { return false };
         let clen = got
             .lines()
@@ -218,27 +184,30 @@ mod tests {
         body.len() >= clen
     }
 
+    /// Read one HTTP request off `s` (until complete, close, or read timeout).
+    pub(crate) fn read_request(s: &mut std::net::TcpStream) -> String {
+        let (mut buf, mut got) = (Vec::new(), String::new());
+        let mut chunk = [0u8; 65536];
+        while !request_complete(&got) {
+            match s.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(k) => {
+                    buf.extend_from_slice(&chunk[..k]);
+                    got = String::from_utf8_lossy(&buf).into_owned();
+                }
+            }
+        }
+        got
+    }
+
     /// Stub upstream: accepts one POST, records the body, 201s it.
     fn stub_upstream(port: u16, keep_open: bool) -> std::thread::JoinHandle<String> {
         std::thread::spawn(move || {
             let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
             let mut s = accept_until(&listener, deadline).expect("client never connected within 15s");
-            let mut buf = Vec::new();
-            let mut chunk = [0u8; 8192];
-            let mut got = String::new();
             s.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
-            loop {
-                let n = s.read(&mut chunk).unwrap_or(0);
-                if n == 0 {
-                    break;
-                }
-                buf.extend_from_slice(&chunk[..n]);
-                got = String::from_utf8_lossy(&buf).into_owned();
-                if request_complete(&got) {
-                    break;
-                }
-            }
+            let got = read_request(&mut s);
             let body = got.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
             if keep_open {
                 let resp = "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 25\r\n\r\n{\"responses\":[[{},201]]}\r\n";
@@ -316,20 +285,7 @@ mod tests {
                 };
                 s.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
                 loop {
-                    let mut buf = Vec::new();
-                    let mut chunk = [0u8; 8192];
-                    let mut got = String::new();
-                    loop {
-                        let n = s.read(&mut chunk).unwrap_or(0);
-                        if n == 0 {
-                            break;
-                        }
-                        buf.extend_from_slice(&chunk[..n]);
-                        got = String::from_utf8_lossy(&buf).into_owned();
-                        if request_complete(&got) {
-                            break;
-                        }
-                    }
+                    let got = read_request(&mut s);
                     if !request_complete(&got) {
                         break; // peer closed or read timed out; take next connection
                     }
@@ -383,15 +339,11 @@ mod tests {
     }
 
     fn agent_ev() -> crate::store::agent_heartbeats::HookEvent {
-        crate::store::agent_heartbeats::HookEvent {
-            event_id: "ev1".into(),
-            timestamp: Some(1_764_163_200),
-            tool_name: "Edit".into(),
-            file_path: Some("C:\\p\\a.rs".into()),
-            ai_model: Some("claude-sonnet-4-5".into()),
-            ai_input_tokens: Some(10),
-            ai_output_tokens: Some(20),
-            ai_line_changes: Some(3),
-        }
+        // fresh timestamp: task 3 drops rows older than 10 min at drain time
+        crate::store::agent_heartbeats::test_ev("ev1", now_secs())
+    }
+
+    fn now_secs() -> i64 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64
     }
 }

@@ -18,11 +18,14 @@
    setup manages) → 401, nothing read or stored; unreadable cfg → accept-any
    fallback. (docs/schema.sql's `api_key ... (needed to forward)` comment is
    stale: forwarding reads the config table, not the row.)
-3. A drain pass posts each unforwarded row's original body to the upstream
-   (api_url + key recorded by setup) with the original key; 2xx sets
-   `forwarded_at`. Backoff 15·2^n capped 3600s, failure count in config.
-   Upstream down never fails the local write. Kicked after each write,
-   plus a 30s timer.
+3. A drain pass posts each unforwarded editor row's original body to the
+   upstream (api_url + key recorded by setup) with the original key; 2xx sets
+   `forwarded_at`. Agent rows (FEAT-002) are composed into WakaTime
+   heartbeats at send time and batched: ≤100 per POST, at most one agent
+   POST per 30s (gate stamp in config `agent_last_post`); hook events older
+   than 10 min are stale replays and are dropped, never composed. Backoff
+   15·2^n capped 3600s, failure count in config. Upstream down never fails
+   the local write. Kicked after each write, plus a 30s timer.
 4. Hackatime remains the ledger; it sees the same bytes it always did.
 5. `byline report` derives hours per local day per project from the stored
    rows (pure functions, nothing cached). Project = explicit `project`
