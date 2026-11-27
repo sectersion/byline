@@ -67,22 +67,16 @@ pub struct AgentRow {
     pub id: i64,
     pub raw: String,
     pub received_at: i64,
-    pub hook_source: String,
 }
 
 pub fn unforwarded(store: &Store, limit: usize) -> Result<Vec<AgentRow>, rusqlite::Error> {
     let mut stmt = store.conn.prepare(
-        "SELECT id, raw, received_at, hook_source FROM agent_heartbeats
+        "SELECT id, raw, received_at FROM agent_heartbeats
          WHERE forwarded_at IS NULL ORDER BY id LIMIT ?",
     )?;
     let rows = stmt
         .query_map([limit as i64], |r| {
-            Ok(AgentRow {
-                id: r.get(0)?,
-                raw: r.get(1)?,
-                received_at: r.get(2)?,
-                hook_source: r.get(3)?,
-            })
+            Ok(AgentRow { id: r.get(0)?, raw: r.get(1)?, received_at: r.get(2)? })
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
