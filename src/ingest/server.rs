@@ -174,6 +174,10 @@ mod tests {
         let (code, resp) = send(19877, &raw);
         assert_eq!(code, 401, "code={code}");
         assert!(resp.contains("invalid api_key"), "resp={resp}");
+        // absent auth header is refused by the same branch, never accept-any
+        let raw_noauth = format!("POST {BULK_PATH} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+        let (code, _) = send(19877, &raw_noauth);
+        assert_eq!(code, 401, "no Authorization header: code={code}");
         assert_eq!(heartbeats::unforwarded(&store.lock().unwrap(), 10).unwrap().len(), 0);
     }
 
