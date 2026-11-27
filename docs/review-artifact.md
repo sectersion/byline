@@ -104,6 +104,19 @@ a Hackatime project — Hackatime remains the ledger, so human and agent time
 are tracked seamlessly in the same place. Byline adds no accounts server, no
 dashboard beyond the homepage, no second review pipeline.
 
+**Bounty requirement 9 — open scope decision, not yet confirmed.** Requirement
+9 asks for a centralized server with accounts, public-by-default profiles,
+projects, git integration and a real-time stats dashboard. This doc takes the
+read that Hackatime satisfies requirement 9 (it is the ledger, and byline
+forwards to it as the labeling layer on top), with requirement 19's
+local-until-submit clause supporting that read. As of 2026-11-26 this read is
+an assertion in this doc, not a decision from the program: **it has not been
+answered in writing by Zach.** Byline deliberately builds none of the
+requirement-9 surfaces itself — no accounts, no profiles, no dashboard beyond
+the homepage. Until the written answer lands, this is treated as an unresolved
+scope decision; if the answer is "byline must own it", FEAT-004 gets replanned
+before any code and the README's positioning line changes with it.
+
 ## When the hooks are not installed
 
 The classes degrade downward, never upward:
