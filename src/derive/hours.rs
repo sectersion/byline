@@ -11,7 +11,8 @@ pub struct RawHeartbeat {
 pub fn per_day_project(rows: &[RawHeartbeat]) -> Vec<(String, String, f64)> {
     // (day "YYYY-MM-DD", project, minutes)
     use std::collections::BTreeMap;
-    let mut buckets: BTreeMap<(String, String), f64> = BTreeMap::new();
+    // (project, time, day) — gathered first, then gap-credited per project.
+    let mut hits: Vec<(String, f64, String)> = Vec::new();
     for row in rows {
         let v: serde_json::Value = match serde_json::from_str(&row.raw) {
             Ok(v) => v,
@@ -27,14 +28,35 @@ pub fn per_day_project(rows: &[RawHeartbeat]) -> Vec<(String, String, f64)> {
                 v.get("entity").and_then(|e| e.as_str()).and_then(entity_parent)
             })
             .unwrap_or_else(|| "(unknown)".to_string());
-        *buckets.entry((day, project)).or_insert(0.0) += MINUTE_PER_HEARTBEAT;
+        hits.push((project, time, day));
+    }
+
+    let mut buckets: BTreeMap<(String, String), f64> = BTreeMap::new();
+    // Group by project, sort by time, credit each heartbeat the gap to the
+    // next heartbeat of the same project, capped (WakaTime's duration model,
+    // which Hackatime inherits). Stored rows arrive in insert order; gaps are
+    // only meaningful in time order.
+    hits.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.partial_cmp(&b.1).unwrap()));
+    for (i, (project, time, day)) in hits.iter().enumerate() {
+        let credit_secs = match hits.get(i + 1) {
+            Some((next_project, next_time, _)) if next_project == project => {
+                (next_time - time).min(GAP_CAP_SECS).max(0.0)
+            }
+            // Last heartbeat of a project: WakaTime gives it a full timeout
+            // window (the duration runs until start + timeout).
+            _ => GAP_CAP_SECS,
+        };
+        *buckets.entry((day.clone(), project.clone())).or_insert(0.0) += credit_secs / 60.0;
     }
     buckets.into_iter().map(|((d, p), m)| (d, p, m)).collect()
 }
 
-/// Minutes credited per heartbeat occurrence (presence, not duration —
-/// gap-based duration math comes with the hours rule, FEAT-003).
-const MINUTE_PER_HEARTBEAT: f64 = 0.5;
+/// Seconds a heartbeat may credit toward the next one. 120s = the CLI's
+/// `heartbeat_rate_limit` (contract §6) = WakaTime's duration timeout, which
+/// Hackatime uses. Not yet matched against a real captured day — the parity
+/// fixture from FIX-005 is deferred until one is captured. Full per-minute
+/// class credits (HUMAN/STRUGGLE/AGENT) come with FEAT-003.
+const GAP_CAP_SECS: f64 = 120.0;
 
 /// Local day string from unix seconds, in the machine's local timezone
 /// (correct per instant, so DST transitions land on the right side).
@@ -135,5 +157,49 @@ mod tests {
         let rows = vec![hb(mid - 60.0, "C:\\p\\a.rs", None)];
         let out = per_day_project(&rows);
         assert_eq!(out[0].0, "2025-11-25");
+    }
+
+    // Gap credit: rows arrive out of order; consecutive heartbeats 2 min
+    // apart credit 2 min each; a lone heartbeat credits the full cap.
+    #[test]
+    fn gap_credit_two_min_apart() {
+        let rows = vec![
+            hb(DAY0 + 240.0, "C:\\p\\a.rs", None),
+            hb(DAY0, "C:\\p\\a.rs", None),
+            hb(DAY0 + 120.0, "C:\\p\\a.rs", None),
+        ];
+        let out = per_day_project(&rows);
+        assert_eq!(out.len(), 1);
+        assert!((out[0].2 - 6.0).abs() < 1e-9, "{}", out[0].2);
+    }
+
+    #[test]
+    fn long_gap_credits_cap_not_wall_clock() {
+        // Two heartbeats an hour apart credit 2 + 2 minutes, not 62.
+        let rows = vec![hb(DAY0, "C:\\p\\a.rs", None), hb(DAY0 + 3600.0, "C:\\p\\a.rs", None)];
+        let out = per_day_project(&rows);
+        assert!((out[0].2 - 4.0).abs() < 1e-9, "{}", out[0].2);
+    }
+
+    #[test]
+    fn burst_credits_actual_gap() {
+        // Heartbeats 10s apart credit 10s each, not a flat minute.
+        let rows = vec![hb(DAY0, "C:\\p\\a.rs", None), hb(DAY0 + 10.0, "C:\\p\\a.rs", None)];
+        let out = per_day_project(&rows);
+        assert!((out[0].2 - (10.0 + 120.0) / 60.0).abs() < 1e-9, "{}", out[0].2);
+    }
+
+    #[test]
+    fn projects_credit_independently() {
+        // Interleaved projects never credit across the boundary.
+        let rows = vec![
+            hb(DAY0, "C:\\a\\f.rs", None),
+            hb(DAY0 + 30.0, "C:\\b\\f.rs", None),
+            hb(DAY0 + 150.0, "C:\\a\\f.rs", None),
+        ];
+        let out = per_day_project(&rows);
+        let total: f64 = out.iter().map(|(_, _, m)| m).sum();
+        // a: 150s gap capped to 120s, plus cap for last; b: cap
+        assert!((total - (120.0 + 120.0 + 120.0) / 60.0).abs() < 1e-9, "{out:?}");
     }
 }
