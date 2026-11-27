@@ -31,12 +31,52 @@ pub fn backoff_secs(failures: u32) -> u64 {
     15u64.saturating_mul(1u64 << failures.min(8)).min(3600)
 }
 
+/// unix seconds now.
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+/// Key holding the earliest unix second at which the next drain attempt is
+/// allowed. Absent (or in the past) means drain immediately.
+const NEXT_RETRY_KEY: &str = "forward_next_retry";
+
+pub(crate) fn next_retry(s: &Store) -> Option<i64> {
+    s.conn
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM config WHERE key = ?",
+            [NEXT_RETRY_KEY],
+            |r| r.get(0),
+        )
+        .ok()
+}
+
+pub(crate) fn set_next_retry(s: &Store, t: i64) {
+    let _ = s.conn.execute(
+        "INSERT INTO config (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![NEXT_RETRY_KEY, t.to_string()],
+    );
+}
+
+pub(crate) fn clear_next_retry(s: &Store) {
+    let _ = s.conn.execute("DELETE FROM config WHERE key = ?", [NEXT_RETRY_KEY]);
+}
+
 /// Drains up to `limit` unforwarded rows from `table`; returns count forwarded.
 /// Config missing -> no-op. Never errors upward. Backoff state (config
 /// `forward_failures`) is shared across tables.
 pub fn drain(store: &Arc<Mutex<Store>>, cfg: Option<ForwardConfig>, limit: usize, table: Table) -> usize {
     let Some(cfg) = cfg else { return 0 };
     let s = store.lock().unwrap();
+    // FIX-008: skip until the backoff elapsed after the last consecutive
+    // failure. Until now this counter existed but nothing consulted it, so an
+    // upstream outage was retried every pass instead of backing off.
+    if next_retry(&s).map_or(false, |next| now_secs() < next) {
+        return 0;
+    }
     match table {
         Table::Heartbeats => drain_editor(&s, &cfg, limit),
         // task 3: agent rows batch (<=100/POST, <=1 POST/30s) in agent_batch
@@ -60,10 +100,13 @@ fn drain_editor(s: &Store, cfg: &ForwardConfig, limit: usize) -> usize {
                 let _ = heartbeats::mark_forwarded(s, id);
                 forwarded += 1;
                 set_failures(s, 0);
+                clear_next_retry(s);
             }
             Err(_) => {
-                set_failures(s, failures(s) + 1);
-                break; // backoff handled by caller pacing; stop this pass
+                let n = failures(s) + 1;
+                set_failures(s, n);
+                set_next_retry(s, now_secs() + backoff_secs(n) as i64);
+                break; // stop this pass; next drain skips until backoff elapses
             }
         }
     }

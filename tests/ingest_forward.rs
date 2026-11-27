@@ -44,6 +44,33 @@ fn backoff_cap() {
     assert_eq!(backoff_secs(10), 3600); // capped
 }
 
+/// FIX-008: after a failure the drain must skip subsequent passes until the
+/// backoff elapses, instead of retrying every pass. Uses a refused port so
+/// every attempt fails; the second call must not even attempt (fast, no sleep).
+#[test]
+fn backoff_skips_retries_until_elapsed() {
+    let (store, _) = common::test_store("backoff-pace");
+    heartbeats::insert(
+        &store.lock().unwrap(),
+        r#"{"time":1.0,"entity":"e","type":"file","user_agent":"u"}"#,
+        byline::store::AuthMethod::Basic,
+        "k",
+    )
+    .unwrap();
+    let cfg = ForwardConfig {
+        api_url: "http://127.0.0.1:1/api/v1".into(),
+        api_key: "k".into(),
+    };
+    assert_eq!(drain(&store, Some(cfg.clone()), 10, Table::Heartbeats), 0, "first attempt fails");
+    assert_eq!(drain(&store, Some(cfg.clone()), 10, Table::Heartbeats), 0, "still in backoff: no attempt");
+    // row is still queued (nothing forwarded, nothing dropped)
+    assert_eq!(
+        heartbeats::unforwarded(&store.lock().unwrap(), 10).unwrap().len(),
+        1,
+        "row remains queued during backoff"
+    );
+}
+
 #[test]
 fn kill_midbatch_no_double_forward() {
     // 3 rows; upstream accepts first two then we kill the connection.
