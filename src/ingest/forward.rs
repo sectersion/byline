@@ -31,7 +31,7 @@ pub fn drain(store: &Arc<Mutex<Store>>, cfg: Option<ForwardConfig>, limit: usize
         let s = store.lock().unwrap();
         heartbeats::unforwarded(&s, limit).unwrap_or_default()
     };
-    let mut s = store.lock().unwrap();
+    let s = store.lock().unwrap();
     let mut forwarded = 0usize;
     for row in rows {
         // bulk path appends bare paths to the base
@@ -104,7 +104,7 @@ fn b64(s: &str) -> String {
 mod tests {
     use super::*;
     use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
+    use std::net::TcpListener;
 
     fn test_store(name: &str) -> Arc<Mutex<Store>> {
         let mut dir = std::env::temp_dir();

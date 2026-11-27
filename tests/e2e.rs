@@ -86,7 +86,7 @@ impl Stub {
     }
 }
 
-fn spawn_daemon(port: u16, envs: &[(&str, &str)]) -> std::process::Child {
+fn spawn_daemon(_port: u16, envs: &[(&str, &str)]) -> std::process::Child {
     let mut cmd = Command::new(exe());
     cmd.arg("serve").stdout(Stdio::null()).stderr(Stdio::null());
     for (k, v) in envs {
@@ -97,7 +97,7 @@ fn spawn_daemon(port: u16, envs: &[(&str, &str)]) -> std::process::Child {
 
 fn wait_port(port: u16, want_open: bool) {
     for _ in 0..100 {
-        if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+        if let Ok(s) = std::net::TcpStream::connect(("127.0.0.1", port)) {
             if want_open {
                 return;
             }
@@ -176,7 +176,7 @@ fn full_cycle() {
     cfg.push(".wakatime.cfg");
     std::fs::write(&cfg, format!("[settings]\napi_key = e2e-key\napi_url = {}\n", stub.url())).unwrap();
 
-    let mut child = Command::new(exe())
+    let child = Command::new(exe())
         .arg("setup")
         .env("USERPROFILE", &home)
         .env("HOME", &home)
