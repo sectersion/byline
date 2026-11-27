@@ -16,10 +16,8 @@ fn free_port() -> u16 {
 }
 
 fn exe() -> std::path::PathBuf {
-    let mut p = std::env::current_exe().unwrap();
-    p.pop(); // deps/
-    p.pop(); // debug/
-    p.join("byline.exe")
+    // Cargo sets CARGO_BIN_EXE_<name> for integration tests — correct path on every OS
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_byline"))
 }
 
 struct Stub {
