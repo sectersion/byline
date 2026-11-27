@@ -40,12 +40,18 @@
    count, unknown paths hit.
 7. `byline setup` repoints `~/.wakatime.cfg` at byline (idempotent, re-claims
    after a foreign rewrite); `unsetup` restores the backup byte-identical.
-8. Agent stream (FEAT-002): Claude Code fires a PostToolUse hook
+8. Agent stream (FEAT-002, FEAT-008): Claude Code fires a PostToolUse hook
    (`plugin/claude-code/claude-hook.mjs`) that POSTs whitelisted fields to
    `POST /api/v1/hooks/claude` (202-always, no key needed — exempt from the
-   WakaTime key gate). Events land in `agent_heartbeats` with dedup on
-   `event_id`, get composed into agent minutes, and drain upstream in the
-   same batched/gated drain as heartbeats (≤100/POST, ≤1 POST/30s). Setup
-   installs the hook: `byline setup` writes `~/.byline/claude-hook.mjs` and
-   the `~/.claude/settings.json` PostToolUse entry (`--no-plugins` skips).
-   FEAT-003 the hours rule; FEAT-004 the worker.
+   WakaTime key gate). OpenCode fires `tool.execute.after` via its plugin
+   (`plugin/opencode/byline.ts`, installed to `~/.config/opencode/plugins/`)
+   that POSTs the same whitelisted shape to `POST /api/v1/hooks/opencode`
+   (also 202-always, key-exempt). Events land in `agent_heartbeats` with
+   dedup on `event_id`, get composed into agent minutes, and drain upstream
+   in the same batched/gated drain as heartbeats (≤100/POST, ≤1 POST/30s).
+   The composed `user_agent` carries the row's own `hook_source`
+   (`claude-code` / `opencode`), read back from the stored raw (FEAT-008).
+   Setup installs the hook: `byline setup` writes `~/.byline/claude-hook.mjs`
+   and the `~/.claude/settings.json` PostToolUse entry (`--no-plugins` skips),
+   and the OpenCode plugin when OpenCode is detected. FEAT-003 the hours rule;
+   FEAT-004 the worker.

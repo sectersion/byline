@@ -41,6 +41,7 @@ never agent runtime.
 
 ## Workflow
 - every change needs at least 1 issue + 1 PR. Never merge to main.
+- every PR closes its corresponding issue (`Closes FEAT-007`). No orphan PRs.
 - keep code clean: separate files, single concern each.
 
 ## Naming contract: every tracked item carries a tag

@@ -44,7 +44,11 @@ pub fn to_heartbeat(store: &crate::store::Store, raw: &str, received_at: i64) ->
     hb.insert("category".into(), json!(CATEGORY));
     hb.insert(
         "user_agent".into(),
-        json!(format!("byline/{} ({})", env!("CARGO_PKG_VERSION"), HOOK_SOURCE)),
+        json!(format!(
+            "byline/{} ({})",
+            env!("CARGO_PKG_VERSION"),
+            ev.get("hook_source").and_then(|x| x.as_str()).unwrap_or(HOOK_SOURCE)
+        )),
     );
     if let Some(p) = project {
         hb.insert("project".into(), json!(p));
