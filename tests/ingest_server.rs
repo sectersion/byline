@@ -37,7 +37,16 @@ fn bulk_of_three_stored_and_acked_in_order() {
     let (code, resp) = common::send(19871, &raw);
     assert_eq!(code, 201, "code={code}");
     assert!(resp.starts_with(r#"{"responses":["#), "resp={resp}");
-    assert_eq!(resp.matches("201").count(), 3);
+    // FIX-006: each slot echoes back the posted heartbeat, not an empty object
+    let parsed: serde_json::Value = serde_json::from_str(&resp).expect("resp is JSON");
+    let responses = parsed.get("responses").expect("has responses array").as_array().expect("responses is array");
+    assert_eq!(responses.len(), 3, "one slot per heartbeat");
+    let first = &responses[0];
+    assert_eq!(first[0]["entity"], serde_json::json!("C:\\p\\a.rs"), "first slot echoes entity");
+    assert_eq!(first[0]["type"], serde_json::json!("file"), "first slot echoes type");
+    assert_eq!(first[0]["user_agent"], serde_json::json!("w/1.0"), "first slot echoes user_agent");
+    assert!(first[0]["time"].is_number(), "time is a number");
+    assert_eq!(first[1], serde_json::json!(201), "status 201");
     let s = Store::open(&db).unwrap();
     assert_eq!(heartbeats::unforwarded(&s, 10).unwrap().len(), 3);
     // same handler serves the single-object endpoint (one row, one ack)
