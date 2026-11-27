@@ -1,6 +1,7 @@
 // tiny_http listener + path dispatch (a match, no router abstraction)
 
 use super::{handle_body, AuthResult};
+use crate::cli::live::after_drain;
 use crate::store::Store;
 use std::sync::{Arc, Mutex};
 
@@ -31,8 +32,11 @@ fn kick(store: &Arc<Mutex<Store>>) {
     let store = store.clone();
     std::thread::spawn(move || {
         let cfg = { let s = store.lock().unwrap(); super::forward::ForwardConfig::from_store(&s) };
-        super::forward::drain(&store, cfg.clone(), 100, super::forward::Table::Heartbeats);
-        super::forward::drain(&store, cfg.clone(), 100, super::forward::Table::AgentHeartbeats);
+        let hb = super::forward::drain(&store, cfg.clone(), 100, super::forward::Table::Heartbeats);
+        let ag = super::forward::drain(&store, cfg.clone(), 100, super::forward::Table::AgentHeartbeats);
+        // print live status after drain if there's anything to report
+        let s = store.lock().unwrap();
+        after_drain(&s, hb, ag);
     });
 }
 
