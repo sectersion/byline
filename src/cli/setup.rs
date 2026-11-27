@@ -130,6 +130,11 @@ pub fn unsetup() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // TempHome mutates process-global env vars; tests that touch it must not
+    // run in parallel or they repoint each other's homes.
+    static HOME_LOCK: Mutex<()> = Mutex::new(());
 
     struct TempHome {
         dir: PathBuf,
@@ -167,6 +172,7 @@ mod tests {
 
     #[test]
     fn backup_created_api_url_repointed() {
+        let _g = HOME_LOCK.lock().unwrap();
         let (_h, home) = TempHome::new("basic");
         write_cfg(&home, CFG);
         run().unwrap();
@@ -180,6 +186,7 @@ mod tests {
 
     #[test]
     fn rerun_is_noop() {
+        let _g = HOME_LOCK.lock().unwrap();
         let (_h, home) = TempHome::new("noop");
         write_cfg(&home, CFG);
         run().unwrap();
@@ -190,6 +197,7 @@ mod tests {
 
     #[test]
     fn reclaim_after_foreign_rewrite() {
+        let _g = HOME_LOCK.lock().unwrap();
         let (_h, home) = TempHome::new("reclaim");
         write_cfg(&home, CFG);
         run().unwrap();
@@ -203,6 +211,7 @@ mod tests {
 
     #[test]
     fn unsetup_restores() {
+        let _g = HOME_LOCK.lock().unwrap();
         let (_h, home) = TempHome::new("unsetup");
         write_cfg(&home, CFG);
         run().unwrap();
