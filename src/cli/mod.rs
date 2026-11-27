@@ -3,6 +3,9 @@
 pub mod serve;
 mod setup;
 
+pub mod report;
+pub mod status;
+
 pub fn serve() {
     if let Err(e) = serve::run() {
         eprintln!("byline serve: {e}");
@@ -25,9 +28,18 @@ pub fn unsetup() {
 }
 
 pub fn report() {
-    unimplemented!("FEAT-001 Task 5")
+    if let Err(e) = report::run() {
+        eprintln!("byline report: {e}");
+        std::process::exit(1);
+    }
 }
 
 pub fn status() {
-    unimplemented!("FEAT-001 Task 5")
+    match status::open_store() {
+        Ok((store, _)) => println!("{}", status::one_line(&store)),
+        Err(e) => {
+            eprintln!("byline status: {e}");
+            std::process::exit(1);
+        }
+    }
 }
