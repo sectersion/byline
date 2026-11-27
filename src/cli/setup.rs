@@ -9,10 +9,7 @@ pub fn wakatime_cfg() -> PathBuf {
     if let Some(w) = std::env::var_os("WAKATIME_HOME") {
         let mut p = PathBuf::from(w);
         p.push(".wakatime.cfg");
-        if p.exists() {
-            return p;
-        }
-        return p; // WAKATIME_HOME set: write there
+        return p; // WAKATIME_HOME set: write there even if absent
     }
     let mut p = home_dir();
     p.push(".wakatime.cfg");
@@ -23,44 +20,34 @@ pub fn wakatime_cfg() -> PathBuf {
 /// found==false means the key was absent and the caller appends a fallback.
 fn set_ini(content: &str, key: &str, value: &str) -> (String, bool) {
     let mut found = false;
-    let mut out: Vec<String> = Vec::new();
-    for line in content.lines() {
-        if line.trim_start().starts_with(&format!("{key} ")) || line.trim_start().starts_with(&format!("{key}=")) {
-            out.push(format!("{key} = {value}"));
-            found = true;
-        } else {
-            out.push(line.to_string());
-        }
-    }
-    if !found {
-        let mut with_key: Vec<String> = Vec::new();
-        let mut inserted = false;
-        for l in &out {
-            if l.trim() == "[settings]" {
-                with_key.push(l.clone());
-                with_key.push(format!("{key} = {value}"));
-                inserted = true;
+    let out: Vec<String> = content
+        .lines()
+        .map(|l| {
+            if !found && (l.trim_start().starts_with(&format!("{key} ")) || l.trim_start().starts_with(&format!("{key}="))) {
+                found = true;
+                format!("{key} = {value}")
             } else {
-                with_key.push(l.clone());
+                l.to_string()
             }
-        }
-        if !inserted {
-            with_key.push(format!("{key} = {value}"));
-        }
-        return (with_key.join("\n"), false);
+        })
+        .collect();
+    if found {
+        return (out.join("\n"), true);
     }
-    (out.join("\n"), true)
+    // key absent: insert under [settings] when present, else append
+    let mut res = out;
+    match res.iter().position(|l| l.trim() == "[settings]") {
+        Some(i) => res.insert(i + 1, format!("{key} = {value}")),
+        None => res.push(format!("{key} = {value}")),
+    }
+    (res.join("\n"), false)
 }
 
 pub(crate) fn get_ini(content: &str, key: &str) -> Option<String> {
     content.lines().find_map(|l| {
-        let t = l.trim_start();
-        let rest = t.strip_prefix(key)?;
-        let rest = rest.trim_start_matches(['=', ' ']);
-        if rest == l.trim_start() {
-            return None; // prefix didn't actually match a key= boundary
-        }
-        Some(rest.trim().to_string())
+        // prefix must land on a key= boundary, not mid-token
+        let rest = l.trim_start().strip_prefix(key)?.trim_start_matches(['=', ' ']);
+        (rest != l.trim_start()).then(|| rest.trim().to_string())
     })
 }
 
@@ -76,6 +63,19 @@ pub fn run(skip_plugins: bool) -> Result<(), String> {
     let backed_up = std::fs::read_to_string(&backup).ok();
 
     let byline_original = std::fs::read_to_string(home_dir().join(".byline/original_api_url")).ok();
+
+    // FIX-007: the drain reads the config table, so seed upstream_api_url/upstream_api_key
+    // from the original cfg (backup wins — the live file carries byline's url after repoint).
+    // Empty api_key is not seeded (SEC-001: empty key is unreadable).
+    let src_cfg = backed_up.as_deref().unwrap_or(&original);
+    if let Some(url) = get_ini(src_cfg, "api_url").filter(|u| !u.trim().is_empty() && u.trim() != BYLINE_URL) {
+        let (store, _) = crate::cli::status::open_store()?;
+        store.set_config("upstream_api_url", url.trim()).map_err(|e| e.to_string())?;
+        if let Some(key) = get_ini(src_cfg, "api_key").filter(|k| !k.trim().is_empty()) {
+            store.set_config("upstream_api_key", key.trim()).map_err(|e| e.to_string())?;
+        }
+        println!("upstream: {}", url.trim());
+    }
 
     if current == BYLINE_URL {
         // idempotent: refresh backup only if the cfg changed since backup
@@ -178,6 +178,11 @@ pub(crate) mod tests {
         let mut bak = home.clone();
         bak.push(".wakatime.cfg.byline-bak");
         assert_eq!(std::fs::read_to_string(&bak).unwrap(), CFG, "backup byte-identical");
+        // FIX-007: config table seeded for the drain
+        let mut dbp = home.clone(); dbp.push(".byline/byline.db");
+        let store = crate::store::Store::open(&dbp).unwrap();
+        let get = |k: &str| -> String { store.conn.query_row("SELECT value FROM config WHERE key = ?", [k], |r| r.get(0)).unwrap() };
+        assert_eq!(get("upstream_api_url"), "https://hackatime.hackclub.com/api/hackatime/v1"); assert_eq!(get("upstream_api_key"), "k-k-k");
     }
 
     #[test]

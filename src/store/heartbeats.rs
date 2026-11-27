@@ -2,11 +2,10 @@
 
 use super::{AuthMethod, Store};
 
+// Row: id + raw only. auth_method/api_key stay as provenance db columns (SEC-001); nothing reads them here.
 pub struct Row {
     pub id: i64,
     pub raw: String,
-    pub auth_method: String,
-    pub api_key: String,
 }
 
 pub fn insert(store: &Store, raw: &str, auth: AuthMethod, api_key: &str) -> Result<i64, rusqlite::Error> {
@@ -19,19 +18,9 @@ pub fn insert(store: &Store, raw: &str, auth: AuthMethod, api_key: &str) -> Resu
 }
 
 pub fn unforwarded(store: &Store, limit: usize) -> Result<Vec<Row>, rusqlite::Error> {
-    let mut stmt = store.conn.prepare(
-        "SELECT id, raw, auth_method, api_key FROM heartbeats
-         WHERE forwarded_at IS NULL ORDER BY id LIMIT ?",
-    )?;
+    let mut stmt = store.conn.prepare("SELECT id, raw FROM heartbeats WHERE forwarded_at IS NULL ORDER BY id LIMIT ?")?;
     let rows = stmt
-        .query_map([limit as i64], |r| {
-            Ok(Row {
-                id: r.get(0)?,
-                raw: r.get(1)?,
-                auth_method: r.get(2)?,
-                api_key: r.get(3)?,
-            })
-        })?
+        .query_map([limit as i64], |r| Ok(Row { id: r.get(0)?, raw: r.get(1)? }))?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
@@ -57,8 +46,9 @@ mod tests {
         let rows = unforwarded(&store, 10).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].raw, raw); // byte-identical
-        assert_eq!(rows[0].auth_method, "basic");
-        assert_eq!(rows[0].api_key, "key-1");
+        // provenance column still written (SEC-001); read directly:
+        let am: String = store.conn.query_row("SELECT auth_method FROM heartbeats WHERE id = ?", [id], |r| r.get(0)).unwrap();
+        assert_eq!(am, "basic");
         assert_eq!(rows[0].id, id);
     }
 
