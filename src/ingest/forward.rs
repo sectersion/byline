@@ -328,8 +328,7 @@ pub(crate) mod tests {
         assert_eq!(n, 1);
         // composed upstream: category, user_agent, ai_* — not the stored raw
         assert!(body.contains(r#""category":"ai coding""#), "body={body}");
-        assert!(body.contains("byline/"), "body={body}");
-        assert!(body.contains("(claude-code)"), "body={body}");
+        assert!(body.contains("byline/") && body.contains("(claude-code)"), "ua: {body}");
         assert!(body.contains("claude-sonnet-4-5"), "body={body}");
         assert!(!body.contains("event_id"), "stored raw leaked upstream: body={body}");
         // restart: drain again — nothing left, nothing re-sent

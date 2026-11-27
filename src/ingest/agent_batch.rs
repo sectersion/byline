@@ -78,7 +78,6 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     fn insert_n(store: &Arc<Mutex<Store>>, n: usize, ts_offset: i64) {
         let s = store.lock().unwrap();
@@ -149,7 +148,6 @@ mod tests {
         insert_n(&store, 1, 0); // fresh row, but the gate still holds
         std::thread::sleep(Duration::from_secs(5));
         assert_eq!(drain(&store, Some(cfg.clone()), 10, Table::AgentHeartbeats), 0);
-        drop(cfg);
         assert_eq!(th.join().unwrap().len(), 1, "second drain must not POST");
         assert_eq!(agent_heartbeats::unforwarded(&store.lock().unwrap(), 10).unwrap().len(), 1);
     }

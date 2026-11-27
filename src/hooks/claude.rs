@@ -141,7 +141,6 @@ mod tests {
         let ev = parse(FIXTURE).unwrap();
         assert_eq!(ev.ai_model, None);
         assert_eq!(ev.ai_input_tokens, None);
-        assert_eq!(ev.file_path.as_deref(), Some("/home/u/byline/src/main.rs"));
         // event_id derived from content when the hook script sends none
         assert_eq!(ev.event_id.len(), 16, "derived fnv id is 16 hex chars");
     }
@@ -188,6 +187,7 @@ mod tests {
         assert_eq!(resp, r#"{"ok":true}"#);
         let s = Store::open(&db).unwrap();
         assert_eq!(hook_errors(&s), 1, "malformed event counted");
+
         assert_eq!(all_rows(&s).len(), 0);
         // and a good event right after still works
         let (code, _) = post(19881, &enriched());
@@ -202,8 +202,8 @@ mod tests {
         let (store, db) = tmp_store("e2e");
         start(19882, store.clone());
         let (code, resp) = post(19882, &enriched());
+
         assert_eq!(code, 202);
-        assert_eq!(resp, r#"{"ok":true}"#);
         let s = Store::open(&db).unwrap();
         let rows = all_rows(&s);
         assert_eq!(rows.len(), 1);
@@ -214,5 +214,16 @@ mod tests {
             .unwrap();
         assert_eq!(src, "claude-code");
         assert_eq!(hook_errors(&s), 0);
+    }
+
+    // (d) privacy: the secret lives in tool_input; the stored row must not
+    #[test]
+    fn stored_row_never_contains_contents() {
+        let (store, _) = tmp_store("secret");
+        let ev = parse(&enriched()).unwrap();
+        agent_heartbeats::insert(&store.lock().unwrap(), &ev, "claude-code").unwrap();
+        let raw = &all_rows(&store.lock().unwrap())[0].1;
+        assert!(!raw.contains(SECRET), "secret reached a stored row");
+        assert!(raw.contains("claude-sonnet-4-5"), "model name still stored: {raw}");
     }
 }

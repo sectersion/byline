@@ -299,14 +299,13 @@ pub(crate) mod tests {
 
     #[test]
     fn unknown_path_404_and_recorded() {
-        let (store, db) = test_store("unknown");
+        let (store, _db) = test_store("unknown");
         start(19874, store.clone(), None);
         let raw = "GET /api/v1/nope HTTP/1.1\r\nHost: x\r\n\r\n";
         let (code, _) = send(19874, &raw);
         assert_eq!(code, 404);
         let n: i64 = store.lock().unwrap().conn.query_row("SELECT count(*) FROM unknown_paths", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
-        let _ = db;
     }
 
     #[test]
