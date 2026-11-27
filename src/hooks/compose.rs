@@ -22,7 +22,7 @@ pub fn to_heartbeat(store: &crate::store::Store, raw: &str, received_at: i64) ->
         None => match file_path {
             Some(p) => (
                 Some(p.to_string()),
-                std::path::Path::new(p).parent().map(|d| d.to_string_lossy().into_owned()),
+                parent_dir(p),
             ),
             None => (None, None),
         },
@@ -52,6 +52,20 @@ pub fn to_heartbeat(store: &crate::store::Store, raw: &str, received_at: i64) ->
         }
     }
     serde_json::to_string(&serde_json::Value::Object(hb)).map_err(|e| e.to_string())
+}
+
+/// Parent directory of a path, separator-agnostic: hook paths may be Windows
+/// ("C:\\p\\a.rs") or POSIX ("/home/u/p/a.rs"), whichever OS byline runs on.
+/// Returns None when the path has no directory component.
+fn parent_dir(p: &str) -> Option<String> {
+    let trimmed = p.trim_end_matches(['/', '\\']);
+    let cut = trimmed.rfind(['/', '\\'])?;
+    if cut == 0 {
+        // "/a.rs": the root itself is the parent
+        return p.starts_with('/').then(|| "/".to_string());
+    }
+    let dir = &trimmed[..cut];
+    (!dir.is_empty()).then(|| dir.to_string())
 }
 
 /// Nearest editor heartbeat within the window: (entity, project) from its raw.
@@ -156,6 +170,40 @@ mod tests {
             serde_json::from_str(&to_heartbeat(&store, &raw, received_at).unwrap()).unwrap();
         assert_eq!(hb["entity"], serde_json::json!("C:\\p\\a.rs"));
         assert_eq!(hb["project"], serde_json::json!("C:\\p"));
+    }
+
+    // (b2b) POSIX-style path: the same fallback, separators must not matter
+    #[test]
+    fn posix_path_parent_dir() {
+        let store = tmp_store("posix");
+        let ev = agent_heartbeats::HookEvent {
+            event_id: "e2".into(),
+            timestamp: Some(1_764_163_200),
+            tool_name: "Edit".into(),
+            file_path: Some("/home/u/byline/src/main.rs".into()),
+            ai_model: Some("claude-sonnet-4-5".into()),
+            ai_input_tokens: Some(1234),
+            ai_output_tokens: Some(567),
+            ai_line_changes: Some(3),
+        };
+        let id = agent_heartbeats::insert(&store, &ev, HOOK_SOURCE).unwrap();
+        let (raw, received_at): (String, i64) = store
+            .conn
+            .query_row("SELECT raw, received_at FROM agent_heartbeats WHERE id = ?", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        let hb: serde_json::Value = serde_json::from_str(&to_heartbeat(&store, &raw, received_at).unwrap()).unwrap();
+        assert_eq!(hb["entity"], serde_json::json!("/home/u/byline/src/main.rs"));
+        assert_eq!(hb["project"], serde_json::json!("/home/u/byline/src"));
+    }
+
+    #[test]
+    fn parent_dir_root_and_bare() {
+        assert_eq!(parent_dir("C:\\a.rs"), Some("C:".to_string()));
+        assert_eq!(parent_dir("/a.rs"), Some("/".to_string()));
+        assert_eq!(parent_dir("a.rs"), None);
+        assert_eq!(parent_dir("p/a.rs"), Some("p".to_string()));
     }
 
     // (b3) editor heartbeat outside the ±30 min window does not match
