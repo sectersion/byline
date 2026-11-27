@@ -121,6 +121,15 @@ mod tests {
                 handle(req, &store);
             }
         });
+        // wait for the listener to actually accept — spawned thread may lose
+        // the race on CI (Linux refused immediately when tests connected first)
+        for _ in 0..50 {
+            if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("server on {port} never came up");
     }
 
     fn send(port: u16, raw: &str) -> (u16, String) {
