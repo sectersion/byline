@@ -6,6 +6,7 @@ pub mod setup_plugin;
 
 pub mod report;
 pub mod status;
+pub mod export;
 
 pub fn serve() {
     if let Err(e) = serve::run() {
@@ -31,6 +32,13 @@ pub fn unsetup() {
 pub fn report() {
     if let Err(e) = report::run() {
         eprintln!("byline report: {e}");
+        std::process::exit(1);
+    }
+}
+
+pub fn export() {
+    if let Err(e) = export::run() {
+        eprintln!("byline export: {e}");
         std::process::exit(1);
     }
 }

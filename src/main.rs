@@ -9,9 +9,10 @@ fn main() {
         Some("setup") => byline::cli::setup(no_plugins),
         Some("unsetup") => byline::cli::unsetup(),
         Some("report") => byline::cli::report(),
+        Some("export") => byline::cli::export(),
         Some("status") => byline::cli::status(),
         _ => {
-            eprintln!("usage: byline <serve|setup|unsetup|report|status>");
+            eprintln!("usage: byline <serve|setup|unsetup|report|export|status>");
             exit(2);
         }
     }
