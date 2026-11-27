@@ -83,6 +83,34 @@ fn gap_credit_two_min_apart() {
     assert!((out[0].2 - 6.0).abs() < 1e-9, "{}", out[0].2);
 }
 
+// FIX-003: duplicate heartbeats (same entity + time) are collapsed before
+// gap crediting — retried/re-sent rows would otherwise inflate hours.
+#[test]
+fn duplicate_entity_time_collapsed() {
+    let rows = vec![
+        hb(DAY0, "C:\\p\\a.rs", None),
+        hb(DAY0, "C:\\p\\a.rs", None), // duplicate
+        hb(DAY0, "C:\\p\\a.rs", None), // duplicate
+    ];
+    let out = per_day_project(&rows);
+    assert_eq!(out.len(), 1);
+    // One heartbeat → full gap cap
+    assert!((out[0].2 - 2.0).abs() < 1e-9, "{}", out[0].2);
+}
+
+// FIX-003: different entities at the same time are NOT duplicates.
+#[test]
+fn different_entity_same_time_kept() {
+    let rows = vec![
+        hb(DAY0, "C:\\p\\a.rs", None),
+        hb(DAY0, "C:\\p\\b.rs", None),
+    ];
+    let out = per_day_project(&rows);
+    assert_eq!(out.len(), 1);
+    // Two heartbeats 0s apart → each credits 0s to the other; last gets cap
+    assert!((out[0].2 - 2.0).abs() < 1e-9, "{}", out[0].2);
+}
+
 #[test]
 fn long_gap_credits_cap_not_wall_clock() {
     // Two heartbeats an hour apart credit 2 + 2 minutes, not 62.

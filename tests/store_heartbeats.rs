@@ -21,7 +21,8 @@ fn insert_roundtrips_raw() {
 }
 
 // Current behaviour on purpose: no insert-side dedupe (contract §7). The
-// dedupe that keeps retried rows from inflating hours lives in derive (FIX-003).
+// dedupe that keeps retried rows from inflating hours lives in derive
+// (FIX-003: derive::hours::per_day_project collapses same entity+time).
 #[test]
 fn no_dedupe_two_identical_inserts() {
     let (store, _) = common::tmp_path("nodedupe");
