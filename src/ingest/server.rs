@@ -140,7 +140,8 @@ pub(crate) mod tests {
     use std::net::TcpStream;
     use std::sync::{Arc, Mutex};
 
-    fn test_store(name: &str) -> (Arc<Mutex<Store>>, std::path::PathBuf) {
+    // shared with hooks::claude's tests (same Arc<Mutex<Store>> + db shape)
+    pub(crate) fn test_store(name: &str) -> (Arc<Mutex<Store>>, std::path::PathBuf) {
         let (store, db) = crate::store::testutil::tmp_path(name);
         (Arc::new(Mutex::new(store)), db)
     }
@@ -219,21 +220,15 @@ pub(crate) mod tests {
         assert_eq!(resp.matches("201").count(), 3);
         let s = Store::open(&db).unwrap();
         assert_eq!(heartbeats::unforwarded(&s, 10).unwrap().len(), 3);
-    }
-
-    #[test]
-    fn single_object_stored_and_acked() {
-        let (store, db) = test_store("single");
-        start(19872, store.clone(), None);
-        let body = r#"{"time":1.0,"entity":"C:\\p\\b.rs","type":"file","user_agent":"w/1.0"}"#;
+        // same handler serves the single-object endpoint (one row, one ack)
+        let body = r#"{"time":4.0,"entity":"C:\\p\\b.rs","type":"file","user_agent":"w/1.0"}"#;
         let raw = format!(
             "POST /api/v1/users/current/heartbeats HTTP/1.1\r\nHost: x\r\n{AUTH}Content-Length: {}\r\n\r\n{body}",
             body.len()
         );
-        let (code, _) = send(19872, &raw);
+        let (code, _) = send(19871, &raw);
         assert_eq!(code, 201);
-        let s = Store::open(&db).unwrap();
-        assert_eq!(heartbeats::unforwarded(&s, 10).unwrap().len(), 1);
+        assert_eq!(heartbeats::unforwarded(&s, 10).unwrap().len(), 4);
     }
 
     #[test]
@@ -250,38 +245,28 @@ pub(crate) mod tests {
         assert!(dbg.join("last-bad-body.json").exists(), "debug file missing");
     }
 
-    /// Stub upstream for the passthrough test: reads one request, records the
-    /// raw wire text, replies with a distinctive status/body.
-    fn stub_proxy_upstream(port: u16) -> std::thread::JoinHandle<String> {
-        use crate::ingest::forward::tests::{accept_until, read_request};
-        std::thread::spawn(move || {
-            let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-            let mut s = accept_until(&listener, deadline).expect("client never connected within 15s");
-            s.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
-            let got = read_request(&mut s);
-            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 17\r\n\r\n{\"upstream\":true}");
-            got
-        })
-    }
-
     #[test]
     fn unknown_path_proxied_to_upstream_status_passthrough() {
         let (store, _db) = test_store("proxypass");
+        let (up_port, th) = crate::ingest::forward::tests::stub_upstream(
+            1,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 17\r\n\r\n{\"upstream\":true}",
+        );
         {
             let s = store.lock().unwrap();
             s.conn
-                .execute("INSERT INTO config (key, value) VALUES ('upstream_api_url', 'http://127.0.0.1:19905/api/hackatime/v1')", [])
+                .execute("INSERT INTO config (key, value) VALUES ('upstream_api_url', ?)", [format!("http://127.0.0.1:{up_port}/api/hackatime/v1")])
                 .unwrap();
             s.conn
                 .execute("INSERT INTO config (key, value) VALUES ('upstream_api_key', 'up-key')", [])
                 .unwrap();
         }
-        let th = stub_proxy_upstream(19905);
         start(19878, store.clone(), None);
         let raw = "GET /api/v1/users/current/durations?date=2026-01-01 HTTP/1.1\r\nHost: x\r\nAuthorization: Basic a2V5LXV1aWQ=\r\n\r\n";
         let (code, resp) = send(19878, &raw);
         let got = th.join().unwrap();
+        assert_eq!(got.len(), 1);
+        let got = &got[0];
         // proxied with method and query; local /api/v1 prefix replaced by the
         // upstream base's own version prefix
         assert!(
@@ -313,6 +298,7 @@ pub(crate) mod tests {
         let (store, _db) = test_store("keepalive");
         start(19875, store.clone(), None);
         let mut s = TcpStream::connect(("127.0.0.1", 19875)).unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
         let req = |i: u32| {
             let body = format!(r#"[{{"time":{i}.0,"entity":"e","type":"file","user_agent":"u"}}]"#);
             format!(
@@ -322,21 +308,12 @@ pub(crate) mod tests {
         };
         s.write_all(req(1).as_bytes()).unwrap();
         s.write_all(req(2).as_bytes()).unwrap();
-        s.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
-        let mut buf = Vec::new();
-        let mut chunk = [0u8; 4096];
-        loop {
-            let n = s.read(&mut chunk).unwrap_or(0);
-            if n == 0 {
-                break;
-            }
-            buf.extend_from_slice(&chunk[..n]);
-            let out = String::from_utf8_lossy(&buf);
-            if out.matches("HTTP/1.1 201").count() >= 2 {
-                break;
-            }
-        }
-        let out = String::from_utf8_lossy(&buf);
+        // both responses arrive on the one connection (shared read helper)
+        let out = format!(
+            "{}{}",
+            crate::ingest::forward::tests::read_request(&mut s),
+            crate::ingest::forward::tests::read_request(&mut s)
+        );
         assert_eq!(out.matches("HTTP/1.1 201").count(), 2, "two responses on one connection");
         assert_eq!(heartbeats::unforwarded(&store.lock().unwrap(), 10).unwrap().len(), 2);
     }

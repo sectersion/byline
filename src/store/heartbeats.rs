@@ -47,15 +47,10 @@ pub fn mark_forwarded(store: &Store, id: i64) -> Result<(), rusqlite::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    fn tmp_store(name: &str) -> (Store, PathBuf) {
-        crate::store::testutil::tmp_path(name)
-    }
 
     #[test]
     fn insert_roundtrips_raw() {
-        let (store, _) = tmp_store("roundtrip");
+        let (store, _) = crate::store::testutil::tmp_path("roundtrip");
         let raw = r#"{"time":1764163200.5,"entity":"C:\\proj\\src\\main.rs","type":"file","user_agent":"wakatime/1.0"}"#;
         let id = insert(&store, raw, AuthMethod::Basic, "key-1").unwrap();
         assert!(id > 0);
@@ -69,7 +64,7 @@ mod tests {
 
     #[test]
     fn no_dedupe_two_identical_inserts() {
-        let (store, _) = tmp_store("nodedupe");
+        let (store, _) = crate::store::testutil::tmp_path("nodedupe");
         let raw = r#"{"time":1,"entity":"a","type":"file","user_agent":"x"}"#;
         insert(&store, raw, AuthMethod::Basic, "k").unwrap();
         insert(&store, raw, AuthMethod::Basic, "k").unwrap();
@@ -78,7 +73,7 @@ mod tests {
 
     #[test]
     fn mark_forwarded_removes_from_queue() {
-        let (store, _) = tmp_store("mark");
+        let (store, _) = crate::store::testutil::tmp_path("mark");
         let id = insert(&store, "{}", AuthMethod::Query, "k").unwrap();
         assert_eq!(unforwarded(&store, 10).unwrap().len(), 1);
         mark_forwarded(&store, id).unwrap();

@@ -181,39 +181,6 @@ mod tests {
         assert_eq!(parent_dir("p/a.rs"), Some("p".to_string()));
     }
 
-    // (b2b) same fallback for a POSIX-style path: separators must not matter
-    #[test]
-    fn posix_path_parent_dir() {
-        let store = db("posix");
-        let ev = agent_heartbeats::HookEvent {
-            event_id: "e2".into(),
-            timestamp: Some(1_764_163_200),
-            tool_name: "Edit".into(),
-            file_path: Some("/home/u/byline/src/main.rs".into()),
-            ai_model: Some("claude-sonnet-4-5".into()),
-            ai_input_tokens: Some(1),
-            ai_output_tokens: Some(2),
-            ai_line_changes: Some(3),
-        };
-        let id = agent_heartbeats::insert(&store, &ev, agent_heartbeats::HOOK_SOURCE).unwrap();
-        let (raw, received_at): (String, i64) = store
-            .conn
-            .query_row("SELECT raw, received_at FROM agent_heartbeats WHERE id = ?", [id], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap();
-        let hb: serde_json::Value =
-            serde_json::from_str(&to_heartbeat(&store, &raw, received_at).unwrap()).unwrap();
-        assert_eq!(hb["entity"], serde_json::json!("/home/u/byline/src/main.rs"));
-        assert_eq!(hb["project"], serde_json::json!("/home/u/byline/src"));
-    }
-
-    #[test]
-    fn parent_dir_root_and_bare() {
-        assert_eq!(parent_dir("C:\\a.rs"), Some("C:".to_string()));
-        assert_eq!(parent_dir("/a.rs"), Some("/".to_string()));
-        assert_eq!(parent_dir("a.rs"), None);
-        assert_eq!(parent_dir("p/a.rs"), Some("p".to_string()));
-    }
-
     // (b3) editor heartbeat outside the ±30 min window does not match
     #[test]
     fn stale_editor_ignored() {

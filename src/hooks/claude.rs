@@ -91,10 +91,8 @@ mod tests {
         v.to_string()
     }
 
-    fn tmp_store(name: &str) -> (Arc<Mutex<Store>>, std::path::PathBuf) {
-        let (store, db) = crate::store::testutil::tmp_path(name);
-        (Arc::new(Mutex::new(store)), db)
-    }
+    // identical helper lives in ingest::server::tests — reuse it
+    use crate::ingest::server::tests::test_store as tmp_store;
 
     // same tiny_http harness as ingest::server's tests — reuse it
     fn start(port: u16, store: Arc<Mutex<Store>>) {
@@ -153,6 +151,10 @@ mod tests {
         assert!(parse("not{!").is_err());
     }
 
+    // (d) privacy: the secret lives in tool_input; the stored row must not.
+    // (Duplicate event_id -> one row is covered by
+    // store::agent_heartbeats::insert_idempotent_on_event_id.)
+
     #[test]
     fn stored_row_never_contains_contents() {
         let (store, db) = tmp_store("secret");
@@ -163,18 +165,6 @@ mod tests {
         assert!(!rows[0].1.contains(SECRET), "secret reached a stored row");
         assert!(rows[0].1.contains("claude-sonnet-4-5"));
         let _ = db;
-    }
-
-    // (b) duplicate event_id inserted twice -> one row
-    #[test]
-    fn duplicate_event_id_is_one_row() {
-        let (store, _) = tmp_store("dup");
-        let s = store.lock().unwrap();
-        let ev = parse(&enriched()).unwrap();
-        let a = agent_heartbeats::insert(&s, &ev, "claude-code").unwrap();
-        let b = agent_heartbeats::insert(&s, &ev, "claude-code").unwrap();
-        assert_eq!(a, b, "second insert is a no-op returning the existing id");
-        assert_eq!(all_rows(&s).len(), 1);
     }
 
     // (c) malformed event -> 202 + hook_errors counter, never a crash
@@ -189,41 +179,18 @@ mod tests {
         assert_eq!(hook_errors(&s), 1, "malformed event counted");
 
         assert_eq!(all_rows(&s).len(), 0);
-        // and a good event right after still works
+        // and a good event right after still works: stored, acked 202, and
+        // hook_source lives in its own column, not the raw
         let (code, _) = post(19881, &enriched());
-        assert_eq!(code, 202);
-        let s = Store::open(&db).unwrap();
-        assert_eq!(all_rows(&s).len(), 1);
-        assert_eq!(hook_errors(&s), 1);
-    }
-
-    #[test]
-    fn endpoint_stores_and_acks_202() {
-        let (store, db) = tmp_store("e2e");
-        start(19882, store.clone());
-        let (code, resp) = post(19882, &enriched());
-
         assert_eq!(code, 202);
         let s = Store::open(&db).unwrap();
         let rows = all_rows(&s);
         assert_eq!(rows.len(), 1);
-        // hook_source lives in its own column, not the raw
         let src: String = s
             .conn
             .query_row("SELECT hook_source FROM agent_heartbeats WHERE id = ?", [rows[0].0], |r| r.get(0))
             .unwrap();
         assert_eq!(src, "claude-code");
-        assert_eq!(hook_errors(&s), 0);
-    }
-
-    // (d) privacy: the secret lives in tool_input; the stored row must not
-    #[test]
-    fn stored_row_never_contains_contents() {
-        let (store, _) = tmp_store("secret");
-        let ev = parse(&enriched()).unwrap();
-        agent_heartbeats::insert(&store.lock().unwrap(), &ev, "claude-code").unwrap();
-        let raw = &all_rows(&store.lock().unwrap())[0].1;
-        assert!(!raw.contains(SECRET), "secret reached a stored row");
-        assert!(raw.contains("claude-sonnet-4-5"), "model name still stored: {raw}");
+        assert_eq!(hook_errors(&s), 1, "the good event must not bump the counter");
     }
 }
