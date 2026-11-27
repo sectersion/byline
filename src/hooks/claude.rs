@@ -77,7 +77,7 @@ mod tests {
     use std::net::TcpStream;
     use std::sync::{Arc, Mutex};
 
-    const FIXTURE: &str = include_str!("../../fixtures/claude-code/post-tool-use.json");
+    const FIXTURE: &str = include_str!("../../docs/fixtures/claude-code/post-tool-use.json");
     const SECRET: &str = "SECRET-OLD-STRING-CONTENTS";
 
     /// Fixture payload with a secret planted in tool_input and byline's
