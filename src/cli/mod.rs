@@ -1,6 +1,7 @@
 // One file per subcommand.
 
 pub mod serve;
+mod setup;
 
 pub fn serve() {
     if let Err(e) = serve::run() {
@@ -10,11 +11,17 @@ pub fn serve() {
 }
 
 pub fn setup() {
-    unimplemented!("FEAT-001 Task 4")
+    if let Err(e) = setup::run() {
+        eprintln!("byline setup: {e}");
+        std::process::exit(1);
+    }
 }
 
 pub fn unsetup() {
-    unimplemented!("FEAT-001 Task 4")
+    if let Err(e) = setup::unsetup() {
+        eprintln!("byline unsetup: {e}");
+        std::process::exit(1);
+    }
 }
 
 pub fn report() {
