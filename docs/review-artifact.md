@@ -96,7 +96,7 @@ review:
    fabricated rows that were never forwarded has a local story that the
    Hackatime ledger doesn't corroborate — cross-checking the two is the
    auditor's move.
-4. **Statistical honesty at scale.** The hero number is unreviewed logged
+4. **Statistical honesty at scale.** The aggregate on the homepage is unreviewed logged
    hours precisely because it needs no trust; the defensible-hours number
    only ever counts after a human review. Fraud caught at review is a
    deflation, not a loss.
