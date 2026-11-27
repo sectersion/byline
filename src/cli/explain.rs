@@ -71,7 +71,7 @@ pub fn run(session_id: &str) -> Result<(), String> {
 
         // Print per-minute
         for (offset, cls) in &classified {
-            writeln!(stdout, "  {:>4} min: {:?}", offset, cls).ok();
+            writeln!(stdout, "  {:>4} min: {:?} — {}", offset, cls, minute_reason(cls)).ok();
         }
 
         // Summary
@@ -87,6 +87,16 @@ pub fn run(session_id: &str) -> Result<(), String> {
         writeln!(stdout, "  verdict:            {:?}", v).ok();
     }
     Ok(())
+}
+
+fn minute_reason(class: &classify::MinuteClass) -> &'static str {
+    match class {
+        classify::MinuteClass::Human => "human edit",
+        classify::MinuteClass::Struggle => "resolved struggle",
+        classify::MinuteClass::AgentReviewed => "agent output reviewed by human",
+        classify::MinuteClass::AgentUnreviewed => "agent output unverified",
+        classify::MinuteClass::Silent => "no evidence",
+    }
 }
 
 fn fmt_ts(ts: f64) -> String {

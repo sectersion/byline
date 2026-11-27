@@ -7,6 +7,78 @@ pub struct RawHeartbeat {
     pub raw: String, // the payload object as received
 }
 
+/// Episode-based credit. Rows carrying verification fields are evaluated as
+/// problem episodes; old WakaTime-only rows retain the pre-FEAT-003 fallback
+/// until the verification producer (SEC-002) is enabled.
+pub fn per_day_project_episode(rows: &[RawHeartbeat], agent_rows: &[String]) -> Vec<(String, String, f64)> {
+    let mut all: Vec<(String, f64, bool, Option<bool>)> = Vec::new();
+    let mut verified = false;
+    for row in rows {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&row.raw) {
+            let t = v.get("time").and_then(|x| x.as_f64()).unwrap_or(0.0);
+            let p = project_of(&v);
+            let outcome = verification_outcome(&v);
+            verified |= outcome.is_some();
+            all.push((p, t, v.get("is_write").and_then(|x| x.as_i64()).unwrap_or(0) == 1, outcome));
+        }
+    }
+    for raw in agent_rows {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
+            let t = v.get("time").or_else(|| v.get("timestamp")).and_then(|x| x.as_f64()).unwrap_or(0.0);
+            let p = project_of(&v);
+            let outcome = verification_outcome(&v);
+            verified |= outcome.is_some();
+            all.push((p, t, false, outcome));
+        }
+    }
+    if !verified {
+        return per_day_project(rows);
+    }
+
+    all.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.partial_cmp(&b.1).unwrap()));
+    let mut out: std::collections::BTreeMap<(String, String), f64> = std::collections::BTreeMap::new();
+    let mut i = 0;
+    while i < all.len() {
+        let project = all[i].0.clone();
+        let start = i;
+        while i < all.len() && all[i].0 == project { i += 1; }
+        let group = &all[start..i];
+        let mut ep = 0;
+        while ep < group.len() {
+            let begin = ep;
+            while ep + 1 < group.len() && group[ep + 1].1 - group[ep].1 < 1800.0 { ep += 1; }
+            let end = ep;
+            let failures: Vec<usize> = (begin..=end).filter(|&n| group[n].3 == Some(false)).collect();
+            let resolves = (begin..=end).any(|n| group[n].3 == Some(true));
+            let same_failure_grind = failures.len() >= 4;
+            let credit = if resolves && failures.len() >= 2 && !same_failure_grind {
+                (group[end].1 - group[begin].1).max(0.0) / 60.0
+            } else if resolves && failures.is_empty() {
+                // A one-shot is not productive struggle; only a small human
+                // approval window is eligible, represented by one minute.
+                if group.iter().any(|x| x.2) { 1.0 } else { 0.0 }
+            } else { 0.0 };
+            if credit > 0.0 {
+                let day = local_day(group[begin].1);
+                *out.entry((day, project.clone())).or_insert(0.0) += credit;
+            }
+            ep += 1;
+        }
+    }
+    out.into_iter().map(|((d, p), m)| (d, p, m)).collect()
+}
+
+fn project_of(v: &serde_json::Value) -> String {
+    v.get("project").and_then(|x| x.as_str()).map(str::to_string)
+        .or_else(|| v.get("entity").or_else(|| v.get("file_path")).and_then(|x| x.as_str()).and_then(entity_parent))
+        .unwrap_or_else(|| "(unknown)".to_string())
+}
+
+fn verification_outcome(v: &serde_json::Value) -> Option<bool> {
+    v.get("exit_code").and_then(|x| x.as_i64()).map(|x| x == 0)
+        .or_else(|| v.get("status").and_then(|x| x.as_str()).map(|x| matches!(x, "passed" | "pass" | "success" | "resolved")))
+}
+
 /// Group heartbeats by local day of the heartbeat `time` field and project.
 /// project = `project` field, else parent directory of `entity`, else `(unknown)`.
 /// Duplicate heartbeats (same `entity` + `time`) are collapsed before credit
