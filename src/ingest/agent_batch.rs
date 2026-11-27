@@ -1,7 +1,7 @@
 // agent-row drain path (FEAT-002 task 3): batches of <=100 per POST, at most
 // one agent POST per 30s (config `agent_last_post`). Editor rows never come here.
 
-use crate::ingest::forward::{failures, post_one, set_failures, ForwardConfig};
+use crate::ingest::forward::{backoff_secs, clear_next_retry, failures, post_one, set_failures, set_next_retry, ForwardConfig};
 use crate::hooks::compose;
 use crate::store::{agent_heartbeats, Store};
 
@@ -40,10 +40,13 @@ pub fn drain_agent(s: &Store, cfg: &ForwardConfig, limit: usize) -> usize {
             }
             set_gate(s);
             set_failures(s, 0);
+            clear_next_retry(s);
             ids.len()
         }
         Err(_) => {
-            set_failures(s, failures(s) + 1);
+            let n = failures(s) + 1;
+            set_failures(s, n);
+            set_next_retry(s, now_secs() + backoff_secs(n) as i64);
             0
         }
     }
