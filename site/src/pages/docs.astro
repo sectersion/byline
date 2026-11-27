@@ -1,0 +1,111 @@
+---
+import Base from '../layouts/Base.astro';
+---
+
+<Base title="byline · Documentation" description="Getting started, commands, data flow, hooks, privacy.">
+    <article class="prose">
+      <h1 id="getting-started">Getting Started</h1>
+      <p>
+        byline sits between your editor and Hackatime — passive, local, invisible — and counts human
+        involvement around AI, not agent runtime.
+      </p>
+
+      <h2 id="installation">Installation</h2>
+      <ol>
+        <li>
+          <strong>Run <code>byline setup</code></strong>
+          <br />
+          This repoints <code>~/.wakatime.cfg</code> at the local daemon and installs editor hooks.
+          <br />
+          <code>byline setup --no-plugins</code> skips editor hook install.
+        </li>
+        <li>
+          <strong>Run <code>byline serve</code></strong>
+          <br />
+          Start the local ingest daemon on <code>127.0.0.1:8787</code> (override with <code>BYLINE_PORT</code>).
+        </li>
+        <li>
+          <strong>Start editing</strong>
+          <br />
+          Your editor's WakaTime plugin will now POST heartbeats to the local daemon.
+        </li>
+      </ol>
+
+      <h2 id="commands">Commands Reference</h2>
+      <dl>
+        <dt><code>byline setup</code></dt>
+        <dd>Repoint <code>~/.wakatime.cfg</code> at the local daemon and install editor hooks. Idempotent, re-claims after a foreign rewrite.</dd>
+
+        <dt><code>byline setup --no-plugins</code></dt>
+        <dd>Skip editor hook install.</dd>
+
+        <dt><code>byline serve</code></dt>
+        <dd>Run the local ingest daemon on <code>127.0.0.1:8787</code> (override with <code>BYLINE_PORT</code>).</dd>
+
+        <dt><code>byline serve --port 8787</code></dt>
+        <dd>Use a custom port.</dd>
+
+        <dt><code>byline status</code></dt>
+        <dd>One line: row count, last-heartbeat age, unforwarded count, unknown paths.</dd>
+
+        <dt><code>byline report</code></dt>
+        <dd>Hours per local day per project, derived from stored heartbeats.</dd>
+
+        <dt><code>byline export</code></dt>
+        <dd>JSONL export of stored raw heartbeats.</dd>
+
+        <dt><code>byline unsetup</code></dt>
+        <dd>Restore <code>~/.wakatime.cfg</code> from the backup. Byte-identical.</dd>
+      </dl>
+
+      <h2 id="hook-integration">Hook Integration</h2>
+      <p>
+        PostToolUse (Claude Code) and tool.execute.after (OpenCode) hooks POST whitelisted hook events to
+        <code>POST /api/v1/hooks/claude</code> and <code>POST /api/v1/hooks/opencode</code>. Both are 202-always,
+        key-exempt. Events land in <code>agent_heartbeats</code> with dedup on <code>event_id</code>, get composed
+        into agent minutes, and drain upstream in the same batched/gated drain as heartbeats
+        (&lt;=100/POST, &lt;=1 POST/30s).
+      </p>
+      <p>
+        <strong>FEAT-003</strong>: the hours rule — agent minutes composed at send time and batched.
+        <br />
+        <strong>FEAT-008</strong>: real event ids, dedup on <code>event_id</code>, read back from stored raw.
+      </p>
+
+      <h2 id="data-flow">Data Flow</h2>
+      <ol>
+        <li>Editor plugin (stock WakaTime plugin, <code>~/.wakatime.cfg</code> repointed by <code>byline setup</code>) POSTs heartbeats to <code>http://127.0.0.1:8787/api/v1/users/current/heartbeats.bulk</code>.</li>
+        <li>byline stores each payload object raw in sqlite (<code>%USERPROFILE%/.byline/byline.db</code>, table <code>heartbeats</code>, column <code>raw</code> byte-identical) with <code>received_at</code>, auth method, and the key's last 4 chars only (SEC-001: sqlite never holds the plaintext key).</li>
+        <li>A drain pass posts each unforwarded editor row's original body to the upstream (api_url + key recorded by setup), authenticating with <code>?api_key=</code>. 2xx sets <code>forwarded_at</code>. Upstream down never fails the local write.</li>
+        <li>Hackatime remains the ledger; it sees the same bytes it always did.</li>
+      </ol>
+
+      <h2 id="privacy">Privacy & Security</h2>
+      <p>
+        <strong>SEC-001</strong>: sqlite never holds the plaintext key; the column is provenance. Malformed bodies → 400 +
+        debug file, never stored. Unknown paths → proxied verbatim to the upstream (method, path with the local
+        <code>/api/v1</code> prefix dropped, query, body; authenticated with the upstream key).
+      </p>
+      <p>
+        Never: poll files on disk for AI activity. Signals arrive as pushes from hooks. Store prompts, code, file
+        contents, keystrokes, or window titles anywhere, including logs and error messages. Store a number that
+        isn't derivable from events. No cached totals.
+      </p>
+    </article>
+
+  <style>
+    .prose { max-width: var(--container-reading); margin: 0 auto; font-size: var(--text-base); line-height: var(--leading-normal); }
+    .prose h1 { font-size: var(--text-5xl); margin-bottom: var(--space-4); }
+    .prose h2 { font-size: var(--text-3xl); margin: var(--space-8) 0 var(--space-4); }
+    .prose h3 { font-size: var(--text-2xl); margin: var(--space-6) 0 var(--space-3); }
+    .prose p { margin: 0 0 var(--space-4); }
+    .prose li { margin: 0 0 var(--space-3); }
+    .prose a { color: var(--accent-text); text-decoration: underline; }
+    .prose strong { font-weight: 600; }
+    .prose dl { display: grid; grid-template-columns: 14rem 1fr; gap: var(--space-3) var(--space-4); margin: 0 0 var(--space-6); }
+@media (max-width: 640px) { .prose dl { grid-template-columns: 1fr; } }
+    .prose dt { font-family: var(--font-mono); font-size: var(--text-sm); color: var(--fg); border-bottom: 1px solid var(--border); padding-bottom: var(--space-2); }
+    .prose dd { color: var(--fg-muted); margin: 0; padding-bottom: var(--space-2); border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent); }
+    .prose ol { margin: 0 0 var(--space-6) var(--space-2); padding-left: var(--space-4); }
+  </style>
+</Base>
