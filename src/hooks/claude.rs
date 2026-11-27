@@ -242,7 +242,12 @@ mod tests {
         let s = Store::open(&db).unwrap();
         let rows = all_rows(&s);
         assert_eq!(rows.len(), 1);
-        assert!(rows[0].1.contains(r#""hook_source":"claude-code""#) || rows[0].1.contains("Edit"));
+        // hook_source lives in its own column, not the raw
+        let src: String = s
+            .conn
+            .query_row("SELECT hook_source FROM agent_heartbeats WHERE id = ?", [rows[0].0], |r| r.get(0))
+            .unwrap();
+        assert_eq!(src, "claude-code");
         assert_eq!(hook_errors(&s), 0);
     }
 }
