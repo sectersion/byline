@@ -1,5 +1,4 @@
 // claude-code hook events -> HookEvent (parse) -> agent_heartbeats (store)
-//
 // Privacy: tool_input / tool_response are dropped at parse time. Only the
 // path, tool name, ai_* counts/names and event_id ever reach storage — no
 // prompt text, file contents, or keystrokes.
@@ -7,8 +6,7 @@
 use crate::store::agent_heartbeats::{HookEvent, HOOK_SOURCE};
 use crate::store::Store;
 
-/// FNV-1a-64 of the raw payload: derives a stable event id when the hook
-/// script did not supply one. No dependency, stable across restarts.
+/// FNV-1a-64 of the raw payload: stable event id when the hook supplied none.
 fn fnv1a64(data: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in data {
@@ -52,9 +50,8 @@ pub fn parse(event_json: &str) -> Result<HookEvent, String> {
     })
 }
 
-/// The endpoint body for POST /api/v1/hooks/claude. Always answers
-/// 202 {"ok":true} — a hook failure must never block the agent. Errors are
-/// counted in the `hook_errors` config counter.
+/// The POST /api/v1/hooks/claude body. Always 202 {"ok":true} — a failing
+/// hook must never block the agent; errors bump the `hook_errors` counter.
 pub fn handle(body: &[u8], store: &Store) -> (u16, String) {
     let text = String::from_utf8_lossy(body);
     match parse(&text) {
@@ -78,8 +75,7 @@ mod tests {
     const FIXTURE: &str = include_str!("../../docs/fixtures/claude-code/post-tool-use.json");
     const SECRET: &str = "SECRET-OLD-STRING-CONTENTS";
 
-    /// Fixture payload with a secret planted in tool_input and byline's
-    /// optional ai_* extension fields added, as the hook script would.
+    /// Fixture payload with a secret planted in tool_input, ai_* fields added.
     fn enriched() -> String {
         let mut v: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
         v["tool_input"]["old_string"] = serde_json::json!(SECRET);
@@ -91,10 +87,8 @@ mod tests {
         v.to_string()
     }
 
-    // identical helper lives in ingest::server::tests — reuse it
     use crate::ingest::server::tests::test_store as tmp_store;
 
-    // same tiny_http harness as ingest::server's tests — reuse it
     fn start(port: u16, store: Arc<Mutex<Store>>) {
         crate::ingest::server::tests::start(port, store, None);
     }
@@ -152,8 +146,6 @@ mod tests {
     }
 
     // (d) privacy: the secret lives in tool_input; the stored row must not.
-    // (Duplicate event_id -> one row is covered by
-    // store::agent_heartbeats::insert_idempotent_on_event_id.)
 
     #[test]
     fn stored_row_never_contains_contents() {
@@ -179,8 +171,7 @@ mod tests {
         assert_eq!(hook_errors(&s), 1, "malformed event counted");
 
         assert_eq!(all_rows(&s).len(), 0);
-        // and a good event right after still works: stored, acked 202, and
-        // hook_source lives in its own column, not the raw
+        // a good event right after still stores with hook_source in its column
         let (code, _) = post(19881, &enriched());
         assert_eq!(code, 202);
         let s = Store::open(&db).unwrap();

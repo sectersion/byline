@@ -20,8 +20,7 @@ pub fn wakatime_cfg() -> PathBuf {
 }
 
 /// Sets the given key's value in the INI file (line replacement, no crate).
-/// Returns None only on an internal error; found==false means the key was
-/// absent and will be appended by the caller's fallback.
+/// found==false means the key was absent and the caller appends a fallback.
 fn set_ini(content: &str, key: &str, value: &str) -> (String, bool) {
     let mut found = false;
     let mut out: Vec<String> = Vec::new();
@@ -34,7 +33,6 @@ fn set_ini(content: &str, key: &str, value: &str) -> (String, bool) {
         }
     }
     if !found {
-        // append under [settings] if present, else at end
         let mut with_key: Vec<String> = Vec::new();
         let mut inserted = false;
         for l in &out {
@@ -66,7 +64,7 @@ pub(crate) fn get_ini(content: &str, key: &str) -> Option<String> {
     })
 }
 
-pub fn run() -> Result<(), String> {
+pub fn run(skip_plugins: bool) -> Result<(), String> {
     let path = wakatime_cfg();
     let original = std::fs::read_to_string(&path).unwrap_or_default();
     if original.is_empty() && !path.exists() {
@@ -77,7 +75,6 @@ pub fn run() -> Result<(), String> {
     let backup = path.with_extension("cfg.byline-bak");
     let backed_up = std::fs::read_to_string(&backup).ok();
 
-    // Which api_url did the user have before byline ever touched this file?
     let byline_original = std::fs::read_to_string(home_dir().join(".byline/original_api_url")).ok();
 
     if current == BYLINE_URL {
@@ -87,16 +84,15 @@ pub fn run() -> Result<(), String> {
             println!("refreshed backup {}", backup.display());
         }
         println!("already repointed at {BYLINE_URL}");
+        super::setup_plugin::run(skip_plugins)?;
         return Ok(());
     }
 
     let (mut new, found) = set_ini(&original, "api_url", BYLINE_URL);
     if !found {
-        // ensure api_url line exists even if set_ini matched nothing
         new = format!("{original}\napi_url = {BYLINE_URL}\n");
     }
 
-    // back up the pre-byline state
     std::fs::write(&backup, &original).map_err(|e| e.to_string())?;
     let orig_dir = home_dir().join(".byline");
     std::fs::create_dir_all(&orig_dir).map_err(|e| e.to_string())?;
@@ -115,6 +111,7 @@ pub fn run() -> Result<(), String> {
     if !current.is_empty() && current != BYLINE_URL && Some(current.as_str()) != byline_original.as_deref().map(str::trim) {
         println!("re-claim: api_url had been changed to {current} (hackatime-setup?); repointing again.");
     }
+    super::setup_plugin::run(skip_plugins)?;
     Ok(())
 }
 
@@ -128,19 +125,18 @@ pub fn unsetup() -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    // TempHome mutates process-global env vars; tests that touch it must not
-    // run in parallel or they repoint each other's homes.
-    static HOME_LOCK: Mutex<()> = Mutex::new(());
+    // TempHome mutates process-global env vars; tests share one HOME_LOCK.
+    pub(crate) static HOME_LOCK: Mutex<()> = Mutex::new(());
 
-    struct TempHome {
+    pub(crate) struct TempHome {
         dir: PathBuf,
     }
     impl TempHome {
-        fn new(name: &str) -> (TempHome, PathBuf) {
+        pub(crate) fn new(name: &str) -> (TempHome, PathBuf) {
             let mut dir = std::env::temp_dir();
             dir.push(format!("byline-setup-{}-{name}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
@@ -175,7 +171,7 @@ mod tests {
         let _g = HOME_LOCK.lock().unwrap();
         let (_h, home) = TempHome::new("basic");
         write_cfg(&home, CFG);
-        run().unwrap();
+        run(false).unwrap();
         let out = read_cfg(&home);
         assert!(out.contains(&format!("api_url = {BYLINE_URL}")), "out={out}");
         assert!(out.contains("api_key = k-k-k"), "key preserved");
@@ -189,9 +185,9 @@ mod tests {
         let _g = HOME_LOCK.lock().unwrap();
         let (_h, home) = TempHome::new("noop");
         write_cfg(&home, CFG);
-        run().unwrap();
+        run(false).unwrap();
         let after1 = read_cfg(&home);
-        run().unwrap();
+        run(false).unwrap();
         assert_eq!(read_cfg(&home), after1, "second run changes nothing");
     }
 
@@ -200,10 +196,10 @@ mod tests {
         let _g = HOME_LOCK.lock().unwrap();
         let (_h, home) = TempHome::new("reclaim");
         write_cfg(&home, CFG);
-        run().unwrap();
+        run(false).unwrap();
         // hackatime-setup clobbers the file back to Hackatime
         write_cfg(&home, CFG);
-        run().unwrap();
+        run(false).unwrap();
         let out = read_cfg(&home);
         assert!(out.contains(&format!("api_url = {BYLINE_URL}")), "re-claimed: {out}");
         assert!(out.contains("api_key = k-k-k"));
@@ -214,7 +210,7 @@ mod tests {
         let _g = HOME_LOCK.lock().unwrap();
         let (_h, home) = TempHome::new("unsetup");
         write_cfg(&home, CFG);
-        run().unwrap();
+        run(false).unwrap();
         unsetup().unwrap();
         assert_eq!(read_cfg(&home), CFG, "restored byte-identical");
     }

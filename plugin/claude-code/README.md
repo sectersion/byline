@@ -22,10 +22,15 @@ Setup detects Claude Code, asks, then installs `~/.byline/claude-hook.mjs`
 and adds the PostToolUse entry to `~/.claude/settings.json`. It prints every
 file it touches and is idempotent. `byline setup --no-plugins` skips this.
 
-Manual (if you prefer not to run setup): copy this directory into
-`~/.claude/plugins/byline/`, or add the entry from `hooks/hooks.json` to
-your `~/.claude/settings.json` `hooks` section, pointing the command at the
-copy of `claude-hook.mjs` you kept.
+Manual (if you prefer not to run setup): copy `claude-hook.mjs` somewhere
+persistent (e.g. `~/.byline/claude-hook.mjs`) and add a PostToolUse entry to
+your `~/.claude/settings.json` `hooks` section:
+
+```json
+{ "matcher": "*", "hooks": [ { "type": "command", "command": "node ~/.byline/claude-hook.mjs" } ] }
+```
+
+(point the command at the copy of `claude-hook.mjs` you kept).
 
 ## Verify
 

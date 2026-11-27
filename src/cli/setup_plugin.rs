@@ -1,7 +1,5 @@
-// byline setup — install the claude-code hook (plugin/claude-code).
-// Writes ~/.byline/claude-hook.mjs and appends the PostToolUse entry to
-// ~/.claude/settings.json. Prints every file touched; never logs payload
-// content (there is none here — only paths).
+// byline setup — install the claude-code hook: writes ~/.byline/claude-hook.mjs
+// and appends the PostToolUse entry to ~/.claude/settings.json.
 
 use super::serve::home_dir;
 use std::io::IsTerminal;
@@ -17,8 +15,7 @@ pub fn run(skip: bool) -> Result<(), String> {
         println!("claude code not found — skipping hook install");
         return Ok(());
     }
-    // interactive prompt only on a real terminal; non-tty (scripts, tests)
-    // proceeds, same as the other setup paths
+    // prompt only on a real terminal; non-tty (scripts, tests) proceeds
     if std::io::stdin().is_terminal() && !confirmed() {
         println!("skipped claude hook");
         return Ok(());
@@ -119,7 +116,6 @@ mod tests {
         let script = home.join(".byline").join(SCRIPT_NAME);
         assert_eq!(std::fs::read_to_string(&script).unwrap(), HOOK_SCRIPT, "hook script written");
         assert!(hook_cmd()["command"].as_str().unwrap().contains(&script.display().to_string()));
-        // (hook_cmd parses the file: claude code's own settings not clobbered)
     }
 
     // (b) idempotent: second run changes nothing

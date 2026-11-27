@@ -40,9 +40,13 @@ pub(crate) fn handle(mut req: tiny_http::Request, store: &Arc<Mutex<Store>>, exp
     let path = url.split('?').next().unwrap_or("").to_string();
     let query = url.split_once('?').map(|(_, q)| q.to_string());
     let auth = AuthResult::parse(&req, query.as_deref());
+    // HOOK_CLAUDE is exempt from the key gate: localhost-only bind, the hook
+    // payload carries no credential-protectable content, and hook POSTs are
+    // 202-always. SEC-001's gate stays on the WakaTime endpoints.
     // Only the user's own key (read from ~/.wakatime.cfg at startup) may
     // write heartbeats. None expected -> accept-any fallback, never brick.
-    if let Some(expected) = expected_key {
+    let gated = if path == HOOK_CLAUDE { &None } else { expected_key };
+    if let Some(expected) = gated {
         if auth.key() != Some(expected) {
             // refuse without reading the body or storing anything
             respond(req, 401, r#"{"error":"invalid api_key"}"#.to_string());
@@ -291,6 +295,23 @@ pub(crate) mod tests {
         assert_eq!(code, 404);
         let n: i64 = store.lock().unwrap().conn.query_row("SELECT count(*) FROM unknown_paths", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
+    }
+
+    // FEAT-002: the hook route is exempt from the key gate — no key and a
+    // wrong key both succeed and store (wrong key on BULK is still 401,
+    // pinned by wrong_key_is_401_no_rows).
+    #[test]
+    fn hook_route_stores_without_any_key() {
+        let (store, db) = test_store("hookexempt");
+        start(19879, store.clone(), Some("key-uuid".to_string()));
+        let post = |auth: &str, id: &str| {
+            let body = format!(r#"{{"tool_name":"Edit","event_id":"{id}"}}"#);
+            send(19879, &format!("POST /api/v1/hooks/claude HTTP/1.1\r\nHost: x\r\n{auth}Content-Length: {}\r\n\r\n{body}", body.len()))
+        };
+        assert_eq!(post(WRONG, "evt-a").0, 202, "wrong key must not 401 the hook route");
+        assert_eq!(post("", "evt-b").0, 202, "missing key must not 401 the hook route");
+        let s = Store::open(&db).unwrap();
+        assert_eq!(crate::store::agent_heartbeats::unforwarded(&s, 10).unwrap().len(), 2, "both stored");
     }
 
     #[test]

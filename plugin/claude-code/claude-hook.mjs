@@ -13,13 +13,17 @@ const text = Buffer.concat(chunks).toString('utf8');
 let ev = null;
 try { ev = JSON.parse(text); } catch { /* not JSON: forward as-is */ }
 
-// Stable id: session + tool call when the payload carries one, else
-// session + whole-second timestamp. Rounded so retries in the same second
-// dedup instead of double-counting. Number() guards against an ISO-string
+// Stable id: Claude Code's tool_use_id when the payload carries one, else
+// session + tool + file + millisecond timestamp so same-second tool uses
+// don't collapse onto one id. Number() guards against an ISO-string
 // timestamp (NaN would collapse every event onto the same id).
+// ponytail: crash-recovery re-delivery within the same millisecond is still
+// a possible double-count; a stable Claude-Code-provided event id would
+// close it.
 if (ev && !ev.event_id) {
-  const ts = Math.round(Number(ev.timestamp) || Date.now() / 1000);
-  const base = ev.tool_call_id ? `${ev.session_id}|${ev.tool_call_id}` : `${ev.session_id}|${ts}`;
+  const base = ev.tool_use_id
+    ? `${ev.session_id}|${ev.tool_use_id}`
+    : `${ev.session_id}|${ev.tool_name}|${ev.file_path ?? ev.tool_input?.file_path ?? ''}|${Date.now()}`;
   ev.event_id = createHash('sha256').update(String(base)).digest('hex').slice(0, 16);
 }
 
@@ -34,7 +38,7 @@ if (ev) {
     if (ev[k] !== undefined) out[k] = ev[k];
   }
   try {
-    await fetch(HOOK_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(out) });
+    await fetch(HOOK_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(out), signal: AbortSignal.timeout(5000) });
   } catch { /* daemon down: never block the agent */ }
 }
 

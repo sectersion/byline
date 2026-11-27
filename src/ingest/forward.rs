@@ -33,7 +33,7 @@ pub fn backoff_secs(failures: u32) -> u64 {
 
 /// Drains up to `limit` unforwarded rows from `table`; returns count forwarded.
 /// Config missing -> no-op. Never errors upward. Backoff state (config
-/// `forward_failures`) is shared across tables: one upstream, one budget.
+/// `forward_failures`) is shared across tables.
 pub fn drain(store: &Arc<Mutex<Store>>, cfg: Option<ForwardConfig>, limit: usize, table: Table) -> usize {
     let Some(cfg) = cfg else { return 0 };
     let s = store.lock().unwrap();
@@ -70,11 +70,9 @@ fn drain_editor(s: &Store, cfg: &ForwardConfig, limit: usize) -> usize {
     forwarded
 }
 
-/// FIX-004: forward one non-heartbeat request to upstream verbatim.
-/// Local `/api/v1` prefix is dropped so the path lands under the configured
-/// base (which already carries the upstream version prefix). Authenticated
-/// with the upstream key, not the caller's header: the local key may differ,
-/// and upstream would reject it. Errors -> caller falls back to 404.
+/// FIX-004: forward one non-heartbeat request to upstream verbatim — local
+/// `/api/v1` prefix dropped, upstream key used (the caller's may differ).
+/// Errors -> caller falls back to 404.
 pub fn proxy(cfg: &ForwardConfig, method: &str, path_and_query: &str, body: &[u8]) -> Result<(u16, String), String> {
     let rest = path_and_query.strip_prefix("/api/v1").unwrap_or(path_and_query);
     let url = format!("{}{}", cfg.api_url.trim_end_matches('/'), rest);
@@ -327,7 +325,7 @@ pub(crate) mod tests {
     }
 
     /// FEAT-002: agent rows drain as composed WakaTime heartbeats; forwarded
-    /// rows are never re-sent on restart (same pattern as forwards_to_stub_and_marks).
+    /// rows are never re-sent on restart (as with forwards_to_stub_and_marks).
     #[test]
     fn agent_rows_drain_composed_and_never_resend() {
         let store = test_store("agent-drain");
@@ -345,8 +343,7 @@ pub(crate) mod tests {
         assert_eq!(n, 1);
         assert_eq!(reqs.len(), 1);
         let body = body_of(&reqs[0]);
-        // composed upstream (category/user_agent/ai_* asserted in compose.rs
-        // composed_shape) — the stored raw must not leak
+        // composed shape (asserted in compose.rs) — the stored raw must not leak
         assert!(body.contains(r#""category":"ai coding""#), "body={body}");
         assert!(!body.contains("event_id"), "stored raw leaked upstream: body={body}");
         // restart: drain again — nothing left, nothing re-sent

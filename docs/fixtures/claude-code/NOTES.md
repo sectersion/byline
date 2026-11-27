@@ -13,12 +13,16 @@ Fields Claude Code actually sends on PostToolUse:
 - `tool_response` (object, tool-specific; for Edit contains `filePath`,
   `structuredPatch`, ...)
 
-No top-level timestamp and no unique event id exist in the payload, so byline
+No top-level timestamp and no unique event id exist in the payload (`tool_use_id`
+is Claude Code's id-like field for the tool call, when it sends one), so byline
 derives both:
 
-- `event_id`: the hook script (later task) may add `"event_id"`; when absent,
-  byline uses FNV-1a-64 of the raw payload text (derivable from the event,
-  stable across restarts).
+- `event_id`: the hook script adds one — `session_id|tool_use_id` when
+  `tool_use_id` is present, else `session_id|tool_name|file_path|Date.now()`
+  (millisecond precision). When absent from the posted body, byline falls back
+  to FNV-1a-64 of the raw payload text (stable across restarts). Ceiling:
+  crash-recovery re-delivery within the same millisecond can still
+  double-count; a stable Claude-Code-provided event id would close it.
 - `timestamp`: optional `"timestamp"` top-level field (unix seconds) if the
   hook script adds one; otherwise the store uses its own receive time.
 
