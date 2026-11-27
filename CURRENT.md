@@ -53,5 +53,11 @@
    (`claude-code` / `opencode`), read back from the stored raw (FEAT-008).
    Setup installs the hook: `byline setup` writes `~/.byline/claude-hook.mjs`
    and the `~/.claude/settings.json` PostToolUse entry (`--no-plugins` skips),
-   and the OpenCode plugin when OpenCode is detected. FEAT-003 the hours rule;
-   FEAT-004 the worker.
+   and the OpenCode plugin when OpenCode is detected. FEAT-004 the worker.
+9. `byline explain <session>` (FEAT-003): the hours rule. Reads both tables
+   into sessions (derive::timeline — merge human + agent rows per project,
+   split on gaps ≥30 min), classifies each minute (derive::classify —
+   HUMAN/STRUGGLE/AGENT-REVIEWED/AGENT-UNREVIEWED/SILENT first-match-wins),
+   and scores it (derive::verdict — DefendFull ≥80% ratio, PARTIAL 40–80%,
+   FLAGGED <40%; coverage <70% caps at PARTIAL; defensible hours = credited/60
+   capped at wall-clock). Pure: nothing cached, no new store.
