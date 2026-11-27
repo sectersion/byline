@@ -1,7 +1,12 @@
-// One file per subcommand. Empty stubs until each task lands.
+// One file per subcommand.
+
+pub mod serve;
 
 pub fn serve() {
-    unimplemented!("FEAT-001 Task 2")
+    if let Err(e) = serve::run() {
+        eprintln!("byline serve: {e}");
+        std::process::exit(1);
+    }
 }
 
 pub fn setup() {

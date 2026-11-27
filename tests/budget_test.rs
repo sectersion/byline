@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 // Dependencies allowed in Cargo.toml. Add a dep to ALLOWED in the same
 // commit that adds it to Cargo.toml. Max 1 new dependency per PR.
-const ALLOWED: &[&str] = &["tiny_http", "serde_json", "ureq", "rusqlite"];
+const ALLOWED: &[&str] = &["rusqlite", "ureq", "tiny_http", "serde_json"];
 
 const MAX_LINES_PER_FILE: usize = 400;
 const WARN_LINES_PER_FILE: usize = 300;
