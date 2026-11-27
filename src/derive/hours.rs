@@ -1,6 +1,7 @@
 // pure: stored rows in, minutes per (local day, project) out. No I/O.
 
 use chrono::TimeZone;
+use std::collections::HashSet;
 
 pub struct RawHeartbeat {
     pub raw: String, // the payload object as received
@@ -8,9 +9,13 @@ pub struct RawHeartbeat {
 
 /// Group heartbeats by local day of the heartbeat `time` field and project.
 /// project = `project` field, else parent directory of `entity`, else `(unknown)`.
+/// Duplicate heartbeats (same `entity` + `time`) are collapsed before credit
+/// (FIX-003) — retried/re-sent rows would otherwise inflate hours.
 pub fn per_day_project(rows: &[RawHeartbeat]) -> Vec<(String, String, f64)> {
     // (day "YYYY-MM-DD", project, minutes)
     use std::collections::BTreeMap;
+    // Dedup: same entity + time = duplicate (retried/re-sent heartbeat).
+    let mut seen: HashSet<(String, u64)> = HashSet::new();
     // (project, time, day) — gathered first, then gap-credited per project.
     let mut hits: Vec<(String, f64, String)> = Vec::new();
     for row in rows {
@@ -19,14 +24,18 @@ pub fn per_day_project(rows: &[RawHeartbeat]) -> Vec<(String, String, f64)> {
             Err(_) => continue, // unparseable rows never crash the report
         };
         let time = v.get("time").and_then(|t| t.as_f64()).unwrap_or(0.0);
+        let entity = v.get("entity").and_then(|e| e.as_str()).unwrap_or("").to_string();
+
+        if !seen.insert((entity.clone(), time.to_bits())) {
+            continue; // duplicate entity+time, skip
+        }
+
         let day = local_day(time);
         let project = v
             .get("project")
             .and_then(|p| p.as_str())
             .map(str::to_string)
-            .or_else(|| {
-                v.get("entity").and_then(|e| e.as_str()).and_then(entity_parent)
-            })
+            .or_else(|| v.get("entity").and_then(|e| e.as_str()).and_then(entity_parent))
             .unwrap_or_else(|| "(unknown)".to_string());
         hits.push((project, time, day));
     }

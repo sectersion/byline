@@ -6,7 +6,8 @@
 2. byline stores each payload object raw in sqlite (`%USERPROFILE%/.byline/byline.db`,
    table `heartbeats`, column `raw` byte-identical) with `received_at`,
    auth method, and the key's last 4 chars only (SEC-001: sqlite never
-   holds the plaintext key; the column is provenance). No dedupe. Malformed
+   holds the plaintext key; the column is provenance). No insert-side
+   dedupe (contract §7); dedupe lives in derive (item 5). Malformed
    bodies → 400 + debug file, never stored. Unknown paths (anything but the
    two heartbeat POSTs and the `GET /users/current` stub, FIX-004) → proxied
    verbatim to the upstream (method, path with the local `/api/v1` prefix
@@ -33,6 +34,8 @@
    rows (pure functions, nothing cached). Project = explicit `project`
    field, else parent dir of `entity`, else `(unknown)`. Local day is the
    machine's timezone via chrono (FIX-001), correct per instant across DST.
+   Duplicate heartbeats (same `entity` + `time`) are collapsed before credit
+   (FIX-003: derive::hours::per_day_project).
 6. `byline status` prints one line: rows, last-heartbeat age, unforwarded
    count, unknown paths hit.
 7. `byline setup` repoints `~/.wakatime.cfg` at byline (idempotent, re-claims
