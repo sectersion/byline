@@ -116,9 +116,11 @@ pub(crate) fn set_failures(s: &Store, n: u32) {
 
 pub(crate) fn post_one(url: &str, key: &str, body: &str) -> Result<(), String> {
     // one POST to the bulk endpoint; the body goes out as one JSON array.
-    // FIX-009: query-param auth — Hackatime rejects this key as a Basic header
+    // FIX-009: query-param auth — Hackatime rejects this key as a Basic header.
+    // FIX-010: Content-Type json — octet-stream (ureq's default for send_bytes)
+    // is a 400 on Hackatime.
     let payload = format!("[{body}]");
-    let req = ureq::post(&format!("{url}?api_key={key}"));
+    let req = ureq::post(&format!("{url}?api_key={key}")).header("Content-Type", "application/json");
     let mut resp = req.send(payload.as_bytes()).map_err(|e| e.to_string())?;
     if resp.status().as_u16() < 300 {
         let _ = resp.body_mut().read_to_string().map_err(|e| e.to_string())?;
