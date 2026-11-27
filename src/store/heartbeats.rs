@@ -50,12 +50,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn tmp_store(name: &str) -> (Store, PathBuf) {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("byline-test-{}-{}", std::process::id(), name));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("byline.db");
-        std::fs::remove_file(&path).ok();
-        (Store::open(&path).unwrap(), path)
+        crate::store::testutil::tmp_path(name)
     }
 
     #[test]

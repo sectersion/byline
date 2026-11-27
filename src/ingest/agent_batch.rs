@@ -82,15 +82,9 @@ mod tests {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     fn insert_n(store: &Arc<Mutex<Store>>, n: usize, ts_offset: i64) {
         let s = store.lock().unwrap();
-        for i in 0..n {
-            let ev = agent_heartbeats::HookEvent {
-                event_id: format!("ev{}-{i}", SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
-                timestamp: Some(now_secs() + ts_offset),
-                tool_name: "Edit".into(),
-                file_path: Some("C:\\p\\a.rs".into()),
-                ai_model: Some("claude-sonnet-4-5".into()),
-                ai_input_tokens: Some(10), ai_output_tokens: Some(20), ai_line_changes: Some(3),
-            };
+        for _ in 0..n {
+            let id = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let ev = agent_heartbeats::test_ev(&format!("ev{id}"), now_secs() + ts_offset);
             agent_heartbeats::insert(&s, &ev, agent_heartbeats::HOOK_SOURCE).unwrap();
         }
     }

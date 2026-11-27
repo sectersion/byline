@@ -106,36 +106,31 @@ fn now_secs() -> i64 {
         .as_secs() as i64
 }
 
+/// Canonical test event: id and timestamp vary, the rest is fixed. Change
+/// `file_path` by mutating the returned value when a test needs another path.
+#[cfg(test)]
+pub(crate) fn test_ev(id: &str, timestamp: i64) -> HookEvent {
+    HookEvent {
+        event_id: id.to_string(),
+        timestamp: Some(timestamp),
+        tool_name: "Edit".into(),
+        file_path: Some("C:\\p\\a.rs".into()),
+        ai_model: Some("claude-sonnet-4-5".into()),
+        ai_input_tokens: Some(10),
+        ai_output_tokens: Some(20),
+        ai_line_changes: Some(3),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn ev(id: &str) -> HookEvent {
-        HookEvent {
-            event_id: id.to_string(),
-            timestamp: Some(1_764_163_200),
-            tool_name: "Edit".into(),
-            file_path: Some("C:\\p\\a.rs".into()),
-            ai_model: Some("claude-sonnet-4-5".into()),
-            ai_input_tokens: Some(10),
-            ai_output_tokens: Some(20),
-            ai_line_changes: Some(3),
-        }
-    }
-
-    fn tmp_store(name: &str) -> Store {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("byline-ah-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("byline.db");
-        std::fs::remove_file(&path).ok();
-        Store::open(&path).unwrap()
-    }
+    use crate::store::testutil;
 
     #[test]
     fn insert_composes_sanitized_raw() {
-        let store = tmp_store("compose");
-        let id = insert(&store, &ev("abc"), HOOK_SOURCE).unwrap();
+        let store = testutil::tmp("compose");
+        let id = insert(&store, &test_ev("abc", 1_764_163_200), HOOK_SOURCE).unwrap();
         let raw: String = store
             .conn
             .query_row("SELECT raw FROM agent_heartbeats WHERE id = ?", [id], |r| r.get(0))
@@ -154,14 +149,14 @@ mod tests {
 
     #[test]
     fn insert_idempotent_on_event_id() {
-        let store = tmp_store("idem");
-        let a = insert(&store, &ev("abc"), HOOK_SOURCE).unwrap();
-        let b = insert(&store, &ev("abc"), HOOK_SOURCE).unwrap();
+        let store = testutil::tmp("idem");
+        let a = insert(&store, &test_ev("abc", 1_764_163_200), HOOK_SOURCE).unwrap();
+        let b = insert(&store, &test_ev("abc", 1_764_163_200), HOOK_SOURCE).unwrap();
         assert_eq!(a, b);
         let n: i64 = store.conn.query_row("SELECT count(*) FROM agent_heartbeats", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
         // a different event still inserts
-        let c = insert(&store, &ev("def"), HOOK_SOURCE).unwrap();
+        let c = insert(&store, &test_ev("def", 1_764_163_200), HOOK_SOURCE).unwrap();
         assert_ne!(a, c);
     }
 }

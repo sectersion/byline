@@ -150,12 +150,7 @@ pub(crate) mod tests {
     use std::net::TcpListener;
 
     pub(crate) fn test_store(name: &str) -> Arc<Mutex<Store>> {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("byline-fwd-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db = dir.join("byline.db");
-        std::fs::remove_file(&db).ok();
-        Arc::new(Mutex::new(Store::open(&db).unwrap()))
+        Arc::new(Mutex::new(crate::store::testutil::tmp(name)))
     }
 
     /// accept() that never blocks past `deadline` (None instead of hanging).
@@ -345,19 +340,10 @@ pub(crate) mod tests {
 
     fn agent_ev() -> crate::store::agent_heartbeats::HookEvent {
         // fresh timestamp: task 3 drops rows older than 10 min at drain time
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-        crate::store::agent_heartbeats::HookEvent {
-            event_id: "ev1".into(),
-            timestamp: Some(now),
-            tool_name: "Edit".into(),
-            file_path: Some("C:\\p\\a.rs".into()),
-            ai_model: Some("claude-sonnet-4-5".into()),
-            ai_input_tokens: Some(10),
-            ai_output_tokens: Some(20),
-            ai_line_changes: Some(3),
-        }
+        crate::store::agent_heartbeats::test_ev("ev1", now_secs())
+    }
+
+    fn now_secs() -> i64 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64
     }
 }

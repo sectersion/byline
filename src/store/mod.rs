@@ -49,3 +49,23 @@ impl Store {
         Ok(Store { conn })
     }
 }
+
+// shared test helpers: every test module used to carry its own tmp_store copy
+#[cfg(test)]
+pub(crate) mod testutil {
+    use super::Store;
+
+    /// Fresh test store in a unique temp dir (pid + tag make it collision-free).
+    pub(crate) fn tmp_path(tag: &str) -> (Store, std::path::PathBuf) {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("byline-test-{}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("byline.db");
+        std::fs::remove_file(&path).ok();
+        (Store::open(&path).unwrap(), path)
+    }
+
+    pub(crate) fn tmp(tag: &str) -> Store {
+        tmp_path(tag).0
+    }
+}

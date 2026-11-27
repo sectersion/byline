@@ -133,7 +133,7 @@ impl AuthResult {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::store::heartbeats;
     use std::io::{Read, Write};
@@ -141,15 +141,12 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     fn test_store(name: &str) -> (Arc<Mutex<Store>>, std::path::PathBuf) {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("byline-ingest-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db = dir.join("byline.db");
-        std::fs::remove_file(&db).ok();
-        (Arc::new(Mutex::new(Store::open(&db).unwrap())), db)
+        let (store, db) = crate::store::testutil::tmp_path(name);
+        (Arc::new(Mutex::new(store)), db)
     }
 
-    fn start(port: u16, store: Arc<Mutex<Store>>, expected_key: Option<String>) {
+    // shared with hooks::claude's endpoint tests (same tiny_http harness)
+    pub(crate) fn start(port: u16, store: Arc<Mutex<Store>>, expected_key: Option<String>) {
         std::thread::spawn(move || {
             let addr = format!("127.0.0.1:{port}");
             let server = tiny_http::Server::http(&addr).unwrap();
@@ -169,7 +166,8 @@ mod tests {
         panic!("server on {port} never came up");
     }
 
-    fn send(port: u16, raw: &str) -> (u16, String) {
+    // shared with hooks::claude's endpoint tests (same tiny_http harness)
+    pub(crate) fn send(port: u16, raw: &str) -> (u16, String) {
         let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
         s.write_all(raw.as_bytes()).unwrap();
         s.shutdown(std::net::Shutdown::Write).unwrap();
@@ -255,38 +253,15 @@ mod tests {
     /// Stub upstream for the passthrough test: reads one request, records the
     /// raw wire text, replies with a distinctive status/body.
     fn stub_proxy_upstream(port: u16) -> std::thread::JoinHandle<String> {
-        use std::net::TcpListener;
+        use crate::ingest::forward::tests::{accept_until, read_request};
         std::thread::spawn(move || {
-            let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
-            listener.set_nonblocking(true).unwrap();
+            let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-            let mut s = loop {
-                match listener.accept() {
-                    Ok((s, _)) => break s,
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                    Err(_) => panic!("stub accept failed"),
-                }
-                if std::time::Instant::now() >= deadline {
-                    panic!("client never connected within 15s");
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            };
-            listener.set_nonblocking(false).ok();
+            let mut s = accept_until(&listener, deadline).expect("client never connected within 15s");
             s.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
-            let mut buf = Vec::new();
-            let mut chunk = [0u8; 8192];
-            loop {
-                let n = s.read(&mut chunk).unwrap_or(0);
-                if n == 0 {
-                    break;
-                }
-                buf.extend_from_slice(&chunk[..n]);
-                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                    break;
-                }
-            }
+            let got = read_request(&mut s);
             let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 17\r\n\r\n{\"upstream\":true}");
-            String::from_utf8_lossy(&buf).into_owned()
+            got
         })
     }
 
