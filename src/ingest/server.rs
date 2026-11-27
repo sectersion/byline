@@ -278,7 +278,8 @@ pub(crate) mod tests {
             "req={got}"
         );
         let got_lower = got.to_lowercase();
-        assert!(got_lower.contains("authorization: basic"), "auth header arrived, req={got}");
+        assert!(got_lower.contains("api_key=up-key"), "query-param auth arrived, req={got}");
+        assert!(!got_lower.contains("authorization:"), "no basic header, req={got}");
         // caller sees the upstream status and body unmodified
         assert_eq!(code, 200, "upstream status passthrough");
         assert_eq!(resp, r#"{"upstream":true}"#);

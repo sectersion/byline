@@ -75,8 +75,10 @@ fn drain_editor(s: &Store, cfg: &ForwardConfig, limit: usize) -> usize {
 /// Errors -> caller falls back to 404.
 pub fn proxy(cfg: &ForwardConfig, method: &str, path_and_query: &str, body: &[u8]) -> Result<(u16, String), String> {
     let rest = path_and_query.strip_prefix("/api/v1").unwrap_or(path_and_query);
-    let url = format!("{}{}", cfg.api_url.trim_end_matches('/'), rest);
-    let auth = format!("Basic {}", b64(&cfg.api_key));
+    // FIX-009: query-param auth (Basic is rejected by Hackatime); append after
+    // any existing query string the caller's path may carry.
+    let sep = if rest.contains('?') { "&" } else { "?" };
+    let url = format!("{}{}{}api_key={}", cfg.api_url.trim_end_matches('/'), rest, sep, &cfg.api_key);
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(std::time::Duration::from_secs(5)))
         .timeout_global(Some(std::time::Duration::from_secs(15)))
@@ -84,10 +86,10 @@ pub fn proxy(cfg: &ForwardConfig, method: &str, path_and_query: &str, body: &[u8
         .into();
     // ureq 3 only has named-method builders; WakaTime endpoints are GET/POST.
     let result = match method {
-        "GET" => agent.get(&url).header("Authorization", &auth).call(),
-        "POST" => agent.post(&url).header("Authorization", &auth).send(body),
-        "DELETE" => agent.delete(&url).header("Authorization", &auth).call(),
-        "HEAD" => agent.head(&url).header("Authorization", &auth).call(),
+        "GET" => agent.get(&url).call(),
+        "POST" => agent.post(&url).send(body),
+        "DELETE" => agent.delete(&url).call(),
+        "HEAD" => agent.head(&url).call(),
         _ => return Err(format!("unsupported method {method}")),
     };
     let mut resp = result.map_err(|e| e.to_string())?;
@@ -113,9 +115,10 @@ pub(crate) fn set_failures(s: &Store, n: u32) {
 }
 
 pub(crate) fn post_one(url: &str, key: &str, body: &str) -> Result<(), String> {
-    // one POST to the bulk endpoint; the body goes out as one JSON array
+    // one POST to the bulk endpoint; the body goes out as one JSON array.
+    // FIX-009: query-param auth — Hackatime rejects this key as a Basic header
     let payload = format!("[{body}]");
-    let req = ureq::post(url).header("Authorization", &format!("Basic {}", b64(key)));
+    let req = ureq::post(&format!("{url}?api_key={key}"));
     let mut resp = req.send(payload.as_bytes()).map_err(|e| e.to_string())?;
     if resp.status().as_u16() < 300 {
         let _ = resp.body_mut().read_to_string().map_err(|e| e.to_string())?;
@@ -125,21 +128,6 @@ pub(crate) fn post_one(url: &str, key: &str, body: &str) -> Result<(), String> {
     }
 }
 
-fn b64(s: &str) -> String {
-    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let b = s.as_bytes();
-    let mut out = String::new();
-    for chunk in b.chunks(3) {
-        let n = chunk[0] as u32 * 65536
-            + chunk.get(1).copied().unwrap_or(0) as u32 * 256
-            + chunk.get(2).copied().unwrap_or(0) as u32;
-        out.push(T[(n >> 18) as usize & 63] as char);
-        out.push(T[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
-    }
-    out
-}
 
 #[cfg(test)]
 pub(crate) mod tests {
