@@ -1,0 +1,21 @@
+{
+  "session_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "transcript_path": "/home/u/.claude/projects/byline/a1b2c3d4-e5f6-7890-abcd-ef1234567890.jsonl",
+  "cwd": "/home/u/byline",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Edit",
+  "tool_input": {
+    "file_path": "/home/u/byline/src/main.rs",
+    "old_string": "fn main() { EXAMPLE_PLACEHOLDER }",
+    "new_string": "fn main() { EXAMPLE_PLACEHOLDER_NEW }"
+  },
+  "tool_response": {
+    "filePath": "/home/u/byline/src/main.rs",
+    "oldMatches": 1,
+    "replaceCount": 1,
+    "structuredPatch": [
+      { "oldStart": 1, "oldLines": 3, "newStart": 1, "newLines": 3 }
+    ],
+    "userModified": false
+  }
+}

@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+pub mod agent_heartbeats;
 pub mod heartbeats;
 
 pub struct Store {

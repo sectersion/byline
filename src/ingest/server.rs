@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 const BULK: &str = "/api/v1/users/current/heartbeats.bulk";
 const SINGLE: &str = "/api/v1/users/current/heartbeats";
+const HOOK_CLAUDE: &str = "/api/v1/hooks/claude"; // FEAT-002: agent events in
 const CURRENT: &str = "/api/v1/users/current";
 
 pub fn run(port: u16, store: Arc<Mutex<Store>>, expected_key: Option<String>) -> ! {
@@ -33,7 +34,7 @@ fn kick(store: &Arc<Mutex<Store>>) {
     });
 }
 
-fn handle(mut req: tiny_http::Request, store: &Arc<Mutex<Store>>, expected_key: &Option<String>) {
+pub(crate) fn handle(mut req: tiny_http::Request, store: &Arc<Mutex<Store>>, expected_key: &Option<String>) {
     let url = req.url().to_string();
     let path = url.split('?').next().unwrap_or("").to_string();
     let query = url.split_once('?').map(|(_, q)| q.to_string());
@@ -54,7 +55,8 @@ fn handle(mut req: tiny_http::Request, store: &Arc<Mutex<Store>>, expected_key: 
     };
 
     let method = req.method().as_str();
-    let owned = (method == "POST" && (path == BULK || path == SINGLE)) || (method == "GET" && path == CURRENT);
+    let owned = (method == "POST" && (path == BULK || path == SINGLE || path == HOOK_CLAUDE))
+        || (method == "GET" && path == CURRENT);
 
     let (code, resp) = if owned {
         let (code, resp) = {
@@ -75,6 +77,7 @@ fn handle(mut req: tiny_http::Request, store: &Arc<Mutex<Store>>, expected_key: 
                         (400, format!(r#"{{"error":"malformed body: {msg}"}}"#))
                     }
                 },
+                ("POST", p) if p == HOOK_CLAUDE => crate::hooks::claude::handle(&body, &s),
                 ("GET", _) => (200, r#"{"data":{"username":"byline-local"}}"#.to_string()),
                 _ => unreachable!("owned implies heartbeat POST or GET current"),
             }
