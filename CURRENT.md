@@ -15,8 +15,8 @@
 4. Hackatime remains the ledger; it sees the same bytes it always did.
 5. `byline report` derives hours per local day per project from the stored
    rows (pure functions, nothing cached). Project = explicit `project`
-   field, else parent dir of `entity`, else `(unknown)`. Local day uses
-   `BYLINE_TZ_OFFSET` (seconds east of UTC), else UTC.
+   field, else parent dir of `entity`, else `(unknown)`. Local day is the
+   machine's timezone via chrono (FIX-001), correct per instant across DST.
 6. `byline status` prints one line: rows, last-heartbeat age, unforwarded
    count, unknown paths hit.
 7. `byline setup` repoints `~/.wakatime.cfg` at byline (idempotent, re-claims

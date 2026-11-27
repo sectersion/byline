@@ -1,5 +1,7 @@
 // pure: stored rows in, minutes per (local day, project) out. No I/O.
 
+use chrono::TimeZone;
+
 pub struct RawHeartbeat {
     pub raw: String, // the payload object as received
 }
@@ -34,42 +36,12 @@ pub fn per_day_project(rows: &[RawHeartbeat]) -> Vec<(String, String, f64)> {
 /// gap-based duration math comes with the hours rule, FEAT-003).
 const MINUTE_PER_HEARTBEAT: f64 = 0.5;
 
-/// Local day string from unix seconds, using the machine's local offset.
+/// Local day string from unix seconds, in the machine's local timezone
+/// (correct per instant, so DST transitions land on the right side).
 fn local_day(unix_secs: f64) -> String {
-    let (y, m, d) = civil_from_unix(unix_secs + local_offset_secs() as f64);
-    format!("{y:04}-{m:02}-{d:02}")
-}
-
-/// ponytail: fixed offset from `chrono`-less env: uses `TZ`-less system default
-/// via libc-free trick — Windows/Unix both expose local offset through the
-/// difference between time() and localtime formatting. We instead read the
-/// offset once from the file's own timestamp comparison. Simpler and honest:
-/// derive uses the same offset the OS reports for right now.
-fn local_offset_secs() -> i64 {
-    // naive approach: parse from `date +%z`-equivalent by using std's
-    // SystemTime for UTC and comparing to a formatted local string is fragile.
-    // Use the TZ offset the process observes via `std::time` cannot do local.
-    // ponytail: hardcoded to system offset via `GetTimeZoneInformation`-free
-    // path: we shell out is banned; instead use the offset embedded by the
-    // compiler? Honest fallback: UTC+0 unless BYLINE_TZ_OFFSET env set.
-    std::env::var("BYLINE_TZ_OFFSET")
-        .ok()
-        .and_then(|s| s.parse::<i64>().ok())
-        .unwrap_or(0)
-}
-
-fn civil_from_unix(secs: f64) -> (i64, u32, u32) {
-    let days = secs.div_euclid(86400.0) as i64;
-    let z = days + 719468;
-    let era = z.div_euclid(146097);
-    let doe = z.rem_euclid(146097);
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
+    let secs = unix_secs.floor() as i64;
+    let dt = chrono::Local.timestamp_opt(secs, 0).unwrap();
+    dt.format("%Y-%m-%d").to_string()
 }
 
 fn entity_parent(entity: &str) -> Option<String> {
@@ -99,14 +71,24 @@ mod tests {
         RawHeartbeat { raw: format!(r#"{{"time":{time},"entity":{esc},"type":"file","user_agent":"u"{proj}}}"#) }
     }
 
-    // 1764115200 = 2025-11-26 00:00 UTC
+    // 1764115200 = 2025-11-26 00:00 UTC. Local midnight of the same date,
+    // computed for the machine's own timezone, so the test holds anywhere.
     const DAY0: f64 = 1764115200.0;
+    fn local_midnight(y: i32, m: u32, d: u32) -> f64 {
+        use chrono::TimeZone;
+        chrono::Local
+            .with_ymd_and_hms(y, m, d, 0, 0, 0)
+            .earliest()
+            .unwrap()
+            .timestamp() as f64
+    }
 
     #[test]
     fn midnight_span_correct_sides() {
+        let mid = local_midnight(2025, 11, 26);
         let rows = vec![
-            hb(DAY0 - 60.0, "C:\\p\\a.rs", None),  // 23:59 previous day
-            hb(DAY0 + 60.0, "C:\\p\\a.rs", None),  // 00:01 this day
+            hb(mid - 60.0, "C:\\p\\a.rs", None), // 1 min before local midnight
+            hb(mid + 60.0, "C:\\p\\a.rs", None), // 1 min after
         ];
         let out = per_day_project(&rows);
         assert_eq!(out.len(), 2, "two days: {out:?}");
@@ -145,12 +127,13 @@ mod tests {
         assert_eq!(per_day_project(&rows).len(), 1);
     }
 
+    // Local offset comes from the process's real timezone via chrono; a
+    // heartbeat one minute before local midnight lands on the previous date.
     #[test]
-    fn tz_offset_env_shifts_day() {
-        std::env::set_var("BYLINE_TZ_OFFSET", "3600");
-        let rows = vec![hb(DAY0 - 1800.0, "C:\\p\\a.rs", None)]; // 23:30 UTC
+    fn day_of_heartbeat_is_its_local_date() {
+        let mid = local_midnight(2025, 11, 26);
+        let rows = vec![hb(mid - 60.0, "C:\\p\\a.rs", None)];
         let out = per_day_project(&rows);
-        assert_eq!(out[0].0, "2025-11-26", "+1h offset pushes into the next day");
-        std::env::remove_var("BYLINE_TZ_OFFSET");
+        assert_eq!(out[0].0, "2025-11-25");
     }
 }

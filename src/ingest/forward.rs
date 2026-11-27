@@ -115,11 +115,43 @@ mod tests {
         Arc::new(Mutex::new(Store::open(&db).unwrap()))
     }
 
+    /// accept() that never blocks past `deadline` (None instead of hanging).
+    fn accept_until(listener: &TcpListener, deadline: std::time::Instant) -> Option<std::net::TcpStream> {
+        listener.set_nonblocking(true).unwrap();
+        loop {
+            match listener.accept() {
+                Ok((s, _)) => {
+                    s.set_nonblocking(false).unwrap();
+                    return Some(s);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(_) => return None,
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// Headers + full body arrived on the wire?
+    fn request_complete(got: &str) -> bool {
+        let Some((_, body)) = got.split_once("\r\n\r\n") else { return false };
+        let clen = got
+            .lines()
+            .find(|l| l.to_lowercase().starts_with("content-length"))
+            .and_then(|l| l.split(':').nth(1))
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        body.len() >= clen
+    }
+
     /// Stub upstream: accepts one POST, records the body, 201s it.
     fn stub_upstream(port: u16, keep_open: bool) -> std::thread::JoinHandle<String> {
         std::thread::spawn(move || {
             let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
-            let (mut s, _) = listener.accept().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            let mut s = accept_until(&listener, deadline).expect("client never connected within 15s");
             let mut buf = Vec::new();
             let mut chunk = [0u8; 8192];
             let mut got = String::new();
@@ -130,18 +162,9 @@ mod tests {
                     break;
                 }
                 buf.extend_from_slice(&chunk[..n]);
-                got = String::from_utf8_lossy(&buf).to_string();
-                if got.contains("\r\n\r\n") {
-                    let clen = got
-                        .lines()
-                        .find(|l| l.to_lowercase().starts_with("content-length"))
-                        .and_then(|l| l.split(':').nth(1))
-                        .and_then(|v| v.trim().parse::<usize>().ok())
-                        .unwrap_or(0);
-                    let body_start = got.split("\r\n\r\n").nth(1).map(|b| b.len()).unwrap_or(0);
-                    if body_start >= clen {
-                        break;
-                    }
+                got = String::from_utf8_lossy(&buf).into_owned();
+                if request_complete(&got) {
+                    break;
                 }
             }
             let body = got.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
@@ -207,24 +230,51 @@ mod tests {
                 heartbeats::insert(&s, &format!(r#"{{"time":{t}.0,"entity":"e","type":"file","user_agent":"u"}}"#), crate::store::AuthMethod::Basic, "k").unwrap();
             }
         }
-        // upstream stub that closes after 2 requests
+        // Stub answers the first 2 requests with 201, closes without a
+        // response on the 3rd. Requests may arrive on one keep-alive
+        // connection (ureq pools) or on fresh ones — both are handled, and
+        // the 15s deadline turns a missing request into a failure, not a hang.
         let listener = TcpListener::bind("127.0.0.1:19903").unwrap();
         let th = std::thread::spawn(move || {
-            for i in 0..3 {
-                let (mut s, _) = listener.accept().unwrap();
-                let mut buf = [0u8; 8192];
-                let _ = s.read(&mut buf);
-                if i < 2 {
-                    let _ = s.write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n");
-                    let _ = s.flush();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            let mut served = 0usize;
+            while served < 3 {
+                let Some(mut s) = accept_until(&listener, deadline) else {
+                    panic!("stub: only {served} of 3 requests arrived within 15s");
+                };
+                s.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                loop {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 8192];
+                    let mut got = String::new();
+                    loop {
+                        let n = s.read(&mut chunk).unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        got = String::from_utf8_lossy(&buf).into_owned();
+                        if request_complete(&got) {
+                            break;
+                        }
+                    }
+                    if !request_complete(&got) {
+                        break; // peer closed or read timed out; take next connection
+                    }
+                    served += 1;
+                    if served < 3 {
+                        let _ = s.write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n");
+                        let _ = s.flush();
+                    } else {
+                        drop(s); // 3rd request gets nothing (connection closed)
+                        break;
+                    }
                 }
-                drop(s); // 3rd request gets nothing (connection closed)
             }
         });
-        // ponytail: drain sends rows one POST at a time; stub refuses the 3rd
         let cfg = ForwardConfig { api_url: "http://127.0.0.1:19903/api/v1".into(), api_key: "k".into() };
         let n = drain(&store, Some(cfg), 10);
-        let _ = th.join();
+        th.join().unwrap(); // surfaces a stub panic instead of silently passing
         // two forwarded, third stays queued
         assert!(n >= 2, "n={n}");
         let s = store.lock().unwrap();
