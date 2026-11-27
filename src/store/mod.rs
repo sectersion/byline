@@ -25,6 +25,12 @@ impl AuthMethod {
 }
 
 impl Store {
+    /// Sets one config key (upsert; config is the only mutable non-event table).
+    pub fn set_config(&self, key: &str, value: &str) -> rusqlite::Result<()> {
+        self.conn.execute("INSERT INTO config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [key, value])?;
+        Ok(())
+    }
+
     /// Opens (creating if needed) and runs schema.sql if the database is
     /// fresh. Errors on version mismatch.
     pub fn open(path: &Path) -> Result<Store, rusqlite::Error> {
