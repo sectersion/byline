@@ -52,6 +52,7 @@ pub fn insert(store: &Store, event: &HookEvent, hook_source: &str) -> Result<i64
         "ai_input_tokens": event.ai_input_tokens,
         "ai_output_tokens": event.ai_output_tokens,
         "ai_line_changes": event.ai_line_changes,
+        "hook_source": hook_source,
     })
     .to_string();
     store.conn.execute(

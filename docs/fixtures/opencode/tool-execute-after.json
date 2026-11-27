@@ -1,0 +1,20 @@
+{
+  "tool": "edit",
+  "sessionID": "ses_01HZX9Z6K3M2N4P5Q6R7S8T9V0",
+  "callID": "call_01HZX9Z6K3M2N4P5Q6R7S8T9V0",
+  "args": {
+    "file_path": "/home/u/byline/src/main.rs",
+    "old_string": "fn main() { EXAMPLE_PLACEHOLDER }",
+    "new_string": "fn main() { EXAMPLE_PLACEHOLDER_NEW }"
+  },
+  "output": {
+    "title": "Edit /home/u/byline/src/main.rs",
+    "output": "Edited /home/u/byline/src/main.rs",
+    "metadata": {
+      "file": {
+        "path": "/home/u/byline/src/main.rs"
+      },
+      "diff": "@@ -1,3 +1,3 @@\n-fn main() { EXAMPLE_PLACEHOLDER }\n+fn main() { EXAMPLE_PLACEHOLDER_NEW }"
+    }
+  }
+}

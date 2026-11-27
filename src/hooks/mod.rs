@@ -1,4 +1,5 @@
-// one file per tool (claude.rs only in v1)
+// one file per tool
 
 pub mod claude;
 pub mod compose;
+pub mod opencode;

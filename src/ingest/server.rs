@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 const BULK: &str = "/api/v1/users/current/heartbeats.bulk";
 const SINGLE: &str = "/api/v1/users/current/heartbeats";
 const HOOK_CLAUDE: &str = "/api/v1/hooks/claude"; // FEAT-002: agent events in
+const HOOK_OPENCODE: &str = "/api/v1/hooks/opencode"; // FEAT-008: OpenCode agent events
 const CURRENT: &str = "/api/v1/users/current";
 
 pub fn run(port: u16, store: Arc<Mutex<Store>>, expected_key: Option<String>) -> ! {
@@ -45,7 +46,7 @@ pub fn handle(mut req: tiny_http::Request, store: &Arc<Mutex<Store>>, expected_k
     // 202-always. SEC-001's gate stays on the WakaTime endpoints.
     // Only the user's own key (read from ~/.wakatime.cfg at startup) may
     // write heartbeats. None expected -> accept-any fallback, never brick.
-    let gated = if path == HOOK_CLAUDE { &None } else { expected_key };
+    let gated = if path == HOOK_CLAUDE || path == HOOK_OPENCODE { &None } else { expected_key };
     if let Some(expected) = gated {
         if auth.key() != Some(expected) {
             // refuse without reading the body or storing anything
@@ -60,7 +61,7 @@ pub fn handle(mut req: tiny_http::Request, store: &Arc<Mutex<Store>>, expected_k
     };
 
     let method = req.method().as_str();
-    let owned = (method == "POST" && (path == BULK || path == SINGLE || path == HOOK_CLAUDE))
+    let owned = (method == "POST" && (path == BULK || path == SINGLE || path == HOOK_CLAUDE || path == HOOK_OPENCODE))
         || (method == "GET" && path == CURRENT);
 
     let (code, resp) = if owned {
@@ -83,6 +84,7 @@ pub fn handle(mut req: tiny_http::Request, store: &Arc<Mutex<Store>>, expected_k
                     }
                 },
                 ("POST", p) if p == HOOK_CLAUDE => crate::hooks::claude::handle(&body, &s),
+                ("POST", p) if p == HOOK_OPENCODE => crate::hooks::opencode::handle(&body, &s),
                 ("GET", _) => (200, r#"{"data":{"username":"byline-local"}}"#.to_string()),
                 _ => unreachable!("owned implies heartbeat POST or GET current"),
             }
