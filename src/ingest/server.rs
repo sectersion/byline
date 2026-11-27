@@ -69,13 +69,22 @@ pub fn handle(mut req: tiny_http::Request, store: &Arc<Mutex<Store>>, expected_k
             let s = store.lock().expect("lock");
             match (method, path.as_str()) {
                 ("POST", p) if p == BULK || p == SINGLE => match handle_body(&body, &s, auth) {
-                    super::IngestOutcome::Stored(n) => {
+                    super::IngestOutcome::Stored(_n) => {
                         drop(s);
                         kick(store);
-                        let responses = serde_json::to_string(
-                            &(0..n).map(|_| serde_json::json!([serde_json::json!({}), 201])).collect::<Vec<_>>(),
-                        )
-                        .expect("serialize ack");
+                        // Echo back the actual heartbeat objects posted, per the WakaTime contract:
+                        //   {"responses": [[heartbeatAttrs, 201], ...]}
+                        let responses: Vec<serde_json::Value> = if p == BULK {
+                            let items: Vec<serde_json::Value> =
+                                serde_json::from_slice(&body).expect("bulk body JSON array");
+                            items.iter().map(|v| serde_json::json!([v, 201])).collect()
+                        } else {
+                            // single heartbeat endpoint: echo back the one posted object
+                            let item: serde_json::Value =
+                                serde_json::from_slice(&body).expect("single heartbeat JSON object");
+                            vec![serde_json::json!([item, 201])]
+                        };
+                        let responses = serde_json::to_string(&responses).expect("serialize ack");
                         (201, format!(r#"{{"responses":{responses}}}"#))
                     }
                     super::IngestOutcome::BadRequest(msg) => {
