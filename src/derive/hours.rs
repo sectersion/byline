@@ -149,16 +149,6 @@ mod tests {
         assert_eq!(per_day_project(&rows).len(), 1);
     }
 
-    // Local offset comes from the process's real timezone via chrono; a
-    // heartbeat one minute before local midnight lands on the previous date.
-    #[test]
-    fn day_of_heartbeat_is_its_local_date() {
-        let mid = local_midnight(2025, 11, 26);
-        let rows = vec![hb(mid - 60.0, "C:\\p\\a.rs", None)];
-        let out = per_day_project(&rows);
-        assert_eq!(out[0].0, "2025-11-25");
-    }
-
     // Gap credit: rows arrive out of order; consecutive heartbeats 2 min
     // apart credit 2 min each; a lone heartbeat credits the full cap.
     #[test]

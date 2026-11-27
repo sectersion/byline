@@ -129,22 +129,19 @@ mod tests {
 
     #[test]
     fn insert_composes_sanitized_raw() {
+
         let store = testutil::tmp("compose");
         let id = insert(&store, &test_ev("abc", 1_764_163_200), HOOK_SOURCE).unwrap();
         let raw: String = store
             .conn
             .query_row("SELECT raw FROM agent_heartbeats WHERE id = ?", [id], |r| r.get(0))
             .unwrap();
+
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(v["event_id"], json!("abc"));
         assert_eq!(v["tool_name"], json!("Edit"));
         assert_eq!(v["ai_input_tokens"], json!(10));
-        // hook_source lives in its own column, per schema
-        let src: String = store
-            .conn
-            .query_row("SELECT hook_source FROM agent_heartbeats WHERE id = ?", [id], |r| r.get(0))
-            .unwrap();
-        assert_eq!(src, "claude-code");
+        // hook_source column asserted end-to-end in hooks::claude's endpoint test
     }
 
     #[test]

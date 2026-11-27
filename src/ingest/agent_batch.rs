@@ -71,13 +71,10 @@ fn now_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ingest::forward::tests::{accept_until, read_request, request_complete, test_store};
+    use crate::ingest::forward::tests::{body_of, stub_upstream, test_store};
     use crate::ingest::forward::{drain, Table};
-    use std::io::Write;
-    use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
-    use std::time::{Duration, Instant};
-
+    use std::time::Duration;
 
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     fn insert_n(store: &Arc<Mutex<Store>>, n: usize, ts_offset: i64) {
@@ -89,27 +86,6 @@ mod tests {
         }
     }
 
-    /// Stub answering up to `n` POSTs with 201, recording each body.
-    fn stub_n(n: usize) -> (u16, std::thread::JoinHandle<Vec<String>>) {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let th = std::thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(15);
-            let mut bodies = Vec::new();
-            for _ in 0..n {
-                let Some(mut s) = accept_until(&listener, deadline) else { break };
-                s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-                let got = read_request(&mut s);
-                if !request_complete(&got) { break; }
-                bodies.push(got.split("\r\n\r\n").nth(1).unwrap_or("").to_string());
-                let _ = s.write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n");
-                let _ = s.flush();
-            }
-            bodies
-        });
-        (port, th)
-    }
-
     fn cfg_for(port: u16) -> ForwardConfig {
         ForwardConfig { api_url: format!("http://127.0.0.1:{port}/api/hackatime/v1"), api_key: "k".into() }
     }
@@ -119,14 +95,15 @@ mod tests {
     fn batch_250_rows_three_posts_of_100() {
         let store = test_store("batch");
         insert_n(&store, 250, 0);
-        let (port, th) = stub_n(3); let cfg = cfg_for(port);
+        let (port, th) = stub_upstream(3, "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n"); let cfg = cfg_for(port);
         for _ in 0..3 {
             drain(&store, Some(cfg.clone()), 250, Table::AgentHeartbeats);
             store.lock().unwrap().conn.execute("UPDATE config SET value = CAST(CAST(value AS INTEGER) - 60 AS TEXT) WHERE key = 'agent_last_post'", []).unwrap();
         }
-        let bodies = th.join().unwrap();
-        assert_eq!(bodies.len(), 3, "expected 3 POSTs");
-        let total: usize = bodies.iter().map(|b| {
+        let reqs = th.join().unwrap();
+        assert_eq!(reqs.len(), 3, "expected 3 POSTs");
+        let total: usize = reqs.iter().map(|r| {
+            let b = body_of(r);
             let n = serde_json::from_str::<serde_json::Value>(b).unwrap().as_array().unwrap().len();
             assert!(n <= 100, "POST batch larger than 100: {n}");
             n
@@ -142,14 +119,13 @@ mod tests {
         let store = test_store("gate-stale");
         insert_n(&store, 1, 0); // fresh
         insert_n(&store, 1, -7200); // stale replay
-        let (port, th) = stub_n(1); let cfg = cfg_for(port);
+        let (port, th) = stub_upstream(1, "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n"); let cfg = cfg_for(port);
         assert_eq!(drain(&store, Some(cfg.clone()), 10, Table::AgentHeartbeats), 1);
         // only the fresh row forwarded; the stale one was dropped, not queued
         assert_eq!(agent_heartbeats::unforwarded(&store.lock().unwrap(), 10).unwrap().len(), 0);
         insert_n(&store, 1, 0); // fresh row, but the gate still holds
         std::thread::sleep(Duration::from_secs(5));
         assert_eq!(drain(&store, Some(cfg.clone()), 10, Table::AgentHeartbeats), 0);
-        drop(cfg);
         assert_eq!(th.join().unwrap().len(), 1, "second drain must not POST");
         assert_eq!(agent_heartbeats::unforwarded(&store.lock().unwrap(), 10).unwrap().len(), 1);
     }

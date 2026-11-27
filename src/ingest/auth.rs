@@ -49,7 +49,6 @@ fn b64decode(s: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-
     #[test]
     fn basic_whole_payload_is_key_no_colon() {
         // "3f9f...key" base64-encoded, no username: separator

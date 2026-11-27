@@ -2,6 +2,7 @@
 
 pub mod serve;
 mod setup;
+mod setup_plugin;
 
 pub mod report;
 pub mod status;
@@ -13,8 +14,8 @@ pub fn serve() {
     }
 }
 
-pub fn setup() {
-    if let Err(e) = setup::run() {
+pub fn setup(skip_plugins: bool) {
+    if let Err(e) = setup::run(skip_plugins) {
         eprintln!("byline setup: {e}");
         std::process::exit(1);
     }

@@ -100,6 +100,7 @@ mod tests {
     use super::*;
     use crate::store::{agent_heartbeats, heartbeats, testutil, AuthMethod, Store};
 
+
     /// Insert a stored agent row and hand back its raw + received_at.
     fn stored_raw(store: &Store, ev: &agent_heartbeats::HookEvent) -> (String, i64) {
         let id = agent_heartbeats::insert(store, ev, HOOK_SOURCE).unwrap();
@@ -109,6 +110,7 @@ mod tests {
                 Ok((r.get(0)?, r.get(1)?))
             })
             .unwrap()
+
     }
 
     /// Store an editor heartbeat and pin its received_at (insert stamps 'now').
@@ -128,10 +130,11 @@ mod tests {
         let (raw, received_at) = stored_raw(&store, &agent_heartbeats::test_ev("e1", 1_764_163_200));
         let hb = composed(&store, &raw, received_at);
         assert_eq!(hb["category"], serde_json::json!("ai coding"));
-        assert!(hb["time"].as_f64().is_some(), "time is a float");
-        assert_eq!(hb["time"].as_f64(), Some(1_764_163_200.0));
-        assert!(hb["user_agent"].as_str().unwrap().starts_with("byline/"));
-        assert!(hb["user_agent"].as_str().unwrap().contains("(claude-code)"));
+        assert_eq!(hb["time"].as_f64(), Some(1_764_163_200.0), "time is the event's own second");
+        assert!(
+            hb["user_agent"].as_str().unwrap().starts_with("byline/")
+                && hb["user_agent"].as_str().unwrap().contains("(claude-code)")
+        );
         assert_eq!(hb["ai_model"], serde_json::json!("claude-sonnet-4-5"));
         assert_eq!(hb["ai_input_tokens"], serde_json::json!(10));
         assert_eq!(hb["ai_output_tokens"], serde_json::json!(20));

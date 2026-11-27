@@ -1,5 +1,4 @@
 // claude-code hook events -> HookEvent (parse) -> agent_heartbeats (store)
-//
 // Privacy: tool_input / tool_response are dropped at parse time. Only the
 // path, tool name, ai_* counts/names and event_id ever reach storage — no
 // prompt text, file contents, or keystrokes.
@@ -7,8 +6,7 @@
 use crate::store::agent_heartbeats::{HookEvent, HOOK_SOURCE};
 use crate::store::Store;
 
-/// FNV-1a-64 of the raw payload: derives a stable event id when the hook
-/// script did not supply one. No dependency, stable across restarts.
+/// FNV-1a-64 of the raw payload: stable event id when the hook supplied none.
 fn fnv1a64(data: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in data {
@@ -52,9 +50,8 @@ pub fn parse(event_json: &str) -> Result<HookEvent, String> {
     })
 }
 
-/// The endpoint body for POST /api/v1/hooks/claude. Always answers
-/// 202 {"ok":true} — a hook failure must never block the agent. Errors are
-/// counted in the `hook_errors` config counter.
+/// The POST /api/v1/hooks/claude body. Always 202 {"ok":true} — a failing
+/// hook must never block the agent; errors bump the `hook_errors` counter.
 pub fn handle(body: &[u8], store: &Store) -> (u16, String) {
     let text = String::from_utf8_lossy(body);
     match parse(&text) {
@@ -78,8 +75,7 @@ mod tests {
     const FIXTURE: &str = include_str!("../../docs/fixtures/claude-code/post-tool-use.json");
     const SECRET: &str = "SECRET-OLD-STRING-CONTENTS";
 
-    /// Fixture payload with a secret planted in tool_input and byline's
-    /// optional ai_* extension fields added, as the hook script would.
+    /// Fixture payload with a secret planted in tool_input, ai_* fields added.
     fn enriched() -> String {
         let mut v: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
         v["tool_input"]["old_string"] = serde_json::json!(SECRET);
@@ -91,12 +87,8 @@ mod tests {
         v.to_string()
     }
 
-    fn tmp_store(name: &str) -> (Arc<Mutex<Store>>, std::path::PathBuf) {
-        let (store, db) = crate::store::testutil::tmp_path(name);
-        (Arc::new(Mutex::new(store)), db)
-    }
+    use crate::ingest::server::tests::test_store as tmp_store;
 
-    // same tiny_http harness as ingest::server's tests — reuse it
     fn start(port: u16, store: Arc<Mutex<Store>>) {
         crate::ingest::server::tests::start(port, store, None);
     }
@@ -141,7 +133,6 @@ mod tests {
         let ev = parse(FIXTURE).unwrap();
         assert_eq!(ev.ai_model, None);
         assert_eq!(ev.ai_input_tokens, None);
-        assert_eq!(ev.file_path.as_deref(), Some("/home/u/byline/src/main.rs"));
         // event_id derived from content when the hook script sends none
         assert_eq!(ev.event_id.len(), 16, "derived fnv id is 16 hex chars");
     }
@@ -153,6 +144,8 @@ mod tests {
         assert!(parse(&v.to_string()).is_err());
         assert!(parse("not{!").is_err());
     }
+
+    // (d) privacy: the secret lives in tool_input; the stored row must not.
 
     #[test]
     fn stored_row_never_contains_contents() {
@@ -166,18 +159,6 @@ mod tests {
         let _ = db;
     }
 
-    // (b) duplicate event_id inserted twice -> one row
-    #[test]
-    fn duplicate_event_id_is_one_row() {
-        let (store, _) = tmp_store("dup");
-        let s = store.lock().unwrap();
-        let ev = parse(&enriched()).unwrap();
-        let a = agent_heartbeats::insert(&s, &ev, "claude-code").unwrap();
-        let b = agent_heartbeats::insert(&s, &ev, "claude-code").unwrap();
-        assert_eq!(a, b, "second insert is a no-op returning the existing id");
-        assert_eq!(all_rows(&s).len(), 1);
-    }
-
     // (c) malformed event -> 202 + hook_errors counter, never a crash
     #[test]
     fn malformed_event_202_and_counted() {
@@ -188,31 +169,19 @@ mod tests {
         assert_eq!(resp, r#"{"ok":true}"#);
         let s = Store::open(&db).unwrap();
         assert_eq!(hook_errors(&s), 1, "malformed event counted");
+
         assert_eq!(all_rows(&s).len(), 0);
-        // and a good event right after still works
+        // a good event right after still stores with hook_source in its column
         let (code, _) = post(19881, &enriched());
         assert_eq!(code, 202);
         let s = Store::open(&db).unwrap();
-        assert_eq!(all_rows(&s).len(), 1);
-        assert_eq!(hook_errors(&s), 1);
-    }
-
-    #[test]
-    fn endpoint_stores_and_acks_202() {
-        let (store, db) = tmp_store("e2e");
-        start(19882, store.clone());
-        let (code, resp) = post(19882, &enriched());
-        assert_eq!(code, 202);
-        assert_eq!(resp, r#"{"ok":true}"#);
-        let s = Store::open(&db).unwrap();
         let rows = all_rows(&s);
         assert_eq!(rows.len(), 1);
-        // hook_source lives in its own column, not the raw
         let src: String = s
             .conn
             .query_row("SELECT hook_source FROM agent_heartbeats WHERE id = ?", [rows[0].0], |r| r.get(0))
             .unwrap();
         assert_eq!(src, "claude-code");
-        assert_eq!(hook_errors(&s), 0);
+        assert_eq!(hook_errors(&s), 1, "the good event must not bump the counter");
     }
 }

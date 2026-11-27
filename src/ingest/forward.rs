@@ -33,7 +33,7 @@ pub fn backoff_secs(failures: u32) -> u64 {
 
 /// Drains up to `limit` unforwarded rows from `table`; returns count forwarded.
 /// Config missing -> no-op. Never errors upward. Backoff state (config
-/// `forward_failures`) is shared across tables: one upstream, one budget.
+/// `forward_failures`) is shared across tables.
 pub fn drain(store: &Arc<Mutex<Store>>, cfg: Option<ForwardConfig>, limit: usize, table: Table) -> usize {
     let Some(cfg) = cfg else { return 0 };
     let s = store.lock().unwrap();
@@ -70,11 +70,9 @@ fn drain_editor(s: &Store, cfg: &ForwardConfig, limit: usize) -> usize {
     forwarded
 }
 
-/// FIX-004: forward one non-heartbeat request to upstream verbatim.
-/// Local `/api/v1` prefix is dropped so the path lands under the configured
-/// base (which already carries the upstream version prefix). Authenticated
-/// with the upstream key, not the caller's header: the local key may differ,
-/// and upstream would reject it. Errors -> caller falls back to 404.
+/// FIX-004: forward one non-heartbeat request to upstream verbatim — local
+/// `/api/v1` prefix dropped, upstream key used (the caller's may differ).
+/// Errors -> caller falls back to 404.
 pub fn proxy(cfg: &ForwardConfig, method: &str, path_and_query: &str, body: &[u8]) -> Result<(u16, String), String> {
     let rest = path_and_query.strip_prefix("/api/v1").unwrap_or(path_and_query);
     let url = format!("{}{}", cfg.api_url.trim_end_matches('/'), rest);
@@ -200,31 +198,53 @@ pub(crate) mod tests {
         got
     }
 
-    /// Stub upstream: accepts one POST, records the body, 201s it.
-    fn stub_upstream(port: u16, keep_open: bool) -> std::thread::JoinHandle<String> {
-        std::thread::spawn(move || {
-            let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+    /// Shared stub upstream (forward, server::tests, agent_batch::tests):
+    /// accepts up to `n` requests, records each raw request (split the body
+    /// off at "\r\n\r\n" where only the body matters), replies with `reply`
+    /// (empty reply -> close without responding). Ephemeral port.
+    pub(crate) fn stub_upstream(
+        n: usize,
+        reply: &'static str,
+    ) -> (u16, std::thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let th = std::thread::spawn(move || {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-            let mut s = accept_until(&listener, deadline).expect("client never connected within 15s");
-            s.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
-            let got = read_request(&mut s);
-            let body = got.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
-            if keep_open {
-                let resp = "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 25\r\n\r\n{\"responses\":[[{},201]]}\r\n";
-                let _ = s.write_all(resp.as_bytes());
+            let mut reqs = Vec::new();
+            for _ in 0..n {
+                let Some(mut s) = accept_until(&listener, deadline) else { break };
+                s.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                let got = read_request(&mut s);
+                if !request_complete(&got) { break; }
+                reqs.push(got);
+                if !reply.is_empty() {
+                    let _ = s.write_all(reply.as_bytes());
+                    let _ = s.flush();
+                }
             }
-            body
-        })
+            reqs
+        });
+        (port, th)
     }
+
+    /// Body of a recorded raw request.
+    pub(crate) fn body_of(req: &str) -> &str {
+        req.split("\r\n\r\n").nth(1).unwrap_or("")
+    }
+
+    const REPLY_201: &str =
+        "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 25\r\n\r\n{\"responses\":[[{},201]]}\r\n";
 
     #[test]
     fn forwards_to_stub_and_marks() {
         let store = test_store("stub");
         let id = heartbeats::insert(&store.lock().unwrap(), r#"{"time":1.0,"entity":"e","type":"file","user_agent":"u"}"#, crate::store::AuthMethod::Basic, "fwd-key").unwrap();
-        let th = stub_upstream(19901, true);
-        let cfg = ForwardConfig { api_url: "http://127.0.0.1:19901/api/hackatime/v1".into(), api_key: "fwd-key".into() };
+        let (port, th) = stub_upstream(1, REPLY_201);
+        let cfg = ForwardConfig { api_url: format!("http://127.0.0.1:{port}/api/hackatime/v1"), api_key: "fwd-key".into() };
         let n = drain(&store, Some(cfg), 10, Table::Heartbeats);
-        let body = th.join().unwrap();
+        let reqs = th.join().unwrap();
+        assert_eq!(reqs.len(), 1);
+        let body = body_of(&reqs[0]);
         assert_eq!(n, 1);
         assert!(body.starts_with('[') && body.contains(r#""time":1.0"#), "body={body}");
         assert!(body.contains(r#""e""#));
@@ -233,24 +253,16 @@ pub(crate) mod tests {
         assert!(queued.iter().all(|r| r.id != id), "row should be marked forwarded");
     }
 
+    // Rows stay queued when there is nothing to drain to: no config at all,
+    // or a config pointing at a port with nothing listening (refused).
     #[test]
-    fn upstream_down_rows_stay_queued() {
-        let store = test_store("down");
-        let s = store.lock().unwrap();
-        heartbeats::insert(&s, "{}", crate::store::AuthMethod::Basic, "k").unwrap();
-        drop(s);
-        // port with nothing listening (refused)
-        let cfg = ForwardConfig { api_url: "http://127.0.0.1:1/api/v1".into(), api_key: "k".into() };
-        let n = drain(&store, Some(cfg), 10, Table::Heartbeats);
-        assert_eq!(n, 0);
-        assert_eq!(heartbeats::unforwarded(&store.lock().unwrap(), 10).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn no_config_is_noop() {
-        let store = test_store("nocfg");
+    fn rows_stay_queued_without_upstream() {
+        let store = test_store("queued");
         heartbeats::insert(&store.lock().unwrap(), "{}", crate::store::AuthMethod::Basic, "k").unwrap();
-        assert_eq!(drain(&store, None, 10, Table::Heartbeats), 0);
+        assert_eq!(drain(&store, None, 10, Table::Heartbeats), 0, "no config is a no-op");
+        assert_eq!(heartbeats::unforwarded(&store.lock().unwrap(), 10).unwrap().len(), 1);
+        let cfg = ForwardConfig { api_url: "http://127.0.0.1:1/api/v1".into(), api_key: "k".into() };
+        assert_eq!(drain(&store, Some(cfg), 10, Table::Heartbeats), 0);
         assert_eq!(heartbeats::unforwarded(&store.lock().unwrap(), 10).unwrap().len(), 1);
     }
 
@@ -313,37 +325,30 @@ pub(crate) mod tests {
     }
 
     /// FEAT-002: agent rows drain as composed WakaTime heartbeats; forwarded
-    /// rows are never re-sent on restart (same pattern as forwards_to_stub_and_marks).
+    /// rows are never re-sent on restart (as with forwards_to_stub_and_marks).
     #[test]
     fn agent_rows_drain_composed_and_never_resend() {
         let store = test_store("agent-drain");
         {
             let s = store.lock().unwrap();
-            crate::store::agent_heartbeats::insert(&s, &agent_ev(), crate::store::agent_heartbeats::HOOK_SOURCE).unwrap();
+            // fresh timestamp: task 3 drops rows older than 10 min at drain time
+            let ev = crate::store::agent_heartbeats::test_ev("ev1", std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64);
+            crate::store::agent_heartbeats::insert(&s, &ev, crate::store::agent_heartbeats::HOOK_SOURCE).unwrap();
         }
-        let th = stub_upstream(19907, true);
-        let cfg = ForwardConfig { api_url: "http://127.0.0.1:19907/api/hackatime/v1".into(), api_key: "k".into() };
+        let (port, th) = stub_upstream(1, REPLY_201);
+        let cfg = ForwardConfig { api_url: format!("http://127.0.0.1:{port}/api/hackatime/v1"), api_key: "k".into() };
         let n = drain(&store, Some(cfg), 10, Table::AgentHeartbeats);
-        let body = th.join().unwrap();
+        let reqs = th.join().unwrap();
         assert_eq!(n, 1);
-        // composed upstream: category, user_agent, ai_* — not the stored raw
+        assert_eq!(reqs.len(), 1);
+        let body = body_of(&reqs[0]);
+        // composed shape (asserted in compose.rs) — the stored raw must not leak
         assert!(body.contains(r#""category":"ai coding""#), "body={body}");
-        assert!(body.contains("byline/"), "body={body}");
-        assert!(body.contains("(claude-code)"), "body={body}");
-        assert!(body.contains("claude-sonnet-4-5"), "body={body}");
         assert!(!body.contains("event_id"), "stored raw leaked upstream: body={body}");
         // restart: drain again — nothing left, nothing re-sent
         let cfg2 = ForwardConfig { api_url: "http://127.0.0.1:1/api/v1".into(), api_key: "k".into() };
         assert_eq!(drain(&store, Some(cfg2), 10, Table::AgentHeartbeats), 0);
         assert_eq!(crate::store::agent_heartbeats::unforwarded(&store.lock().unwrap(), 10).unwrap().len(), 0);
-    }
-
-    fn agent_ev() -> crate::store::agent_heartbeats::HookEvent {
-        // fresh timestamp: task 3 drops rows older than 10 min at drain time
-        crate::store::agent_heartbeats::test_ev("ev1", now_secs())
-    }
-
-    fn now_secs() -> i64 {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64
     }
 }

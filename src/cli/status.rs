@@ -28,27 +28,18 @@ mod tests {
     use crate::store::heartbeats;
 
     // The real home DB is off-limits: it is populated on dev machines and
-    // receives live heartbeats. Every test opens its own temp store.
-    fn temp_store(name: &str) -> crate::store::Store {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("byline-status-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let db = dir.join("byline.db");
-        std::fs::remove_file(&db).ok();
-        crate::store::Store::open(&db).unwrap()
-    }
+    // receives live heartbeats. Every test opens its own temp store
+    // (store::testutil::tmp).
 
     #[test]
-    fn empty_store_zeros_not_errors() {
-        let line = one_line(&temp_store("empty"));
+    fn one_line_counts_reflect_the_store() {
+        let store = crate::store::testutil::tmp("status");
+        // empty store: zeros, never errors
+        let line = one_line(&store);
         assert!(line.contains("rows=0"), "{line}");
         assert!(line.contains("unforwarded=0"), "{line}");
         assert!(line.contains("unknown-paths=0"), "{line}");
-    }
-
-    #[test]
-    fn populated_store_counts() {
-        let store = temp_store("populated");
+        // populated: the counts move
         heartbeats::insert(&store, r#"{"time":1.0}"#, crate::store::AuthMethod::Basic, "k").unwrap();
         let line = one_line(&store);
         assert!(line.contains("rows=1"), "{line}");
