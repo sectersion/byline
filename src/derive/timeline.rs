@@ -88,7 +88,11 @@ fn parse_human(raw: &str) -> Option<Event> {
         .map(str::to_string)
         .or_else(|| entity_parent(&entity))
         .unwrap_or_else(|| "(unknown)".to_string());
-    let is_write = v.get("is_write").and_then(|w| w.as_i64()).unwrap_or(0) == 1;
+    let is_write = match v.get("is_write") {
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(serde_json::Value::Number(n)) => n.as_i64().unwrap_or(0) == 1,
+        _ => false,
+    };
     Some(Event { time, entity, project, is_write, is_agent: false })
 }
 

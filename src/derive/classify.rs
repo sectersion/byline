@@ -33,8 +33,8 @@ pub fn classify_minutes(
     f64,
     HashMap<MinuteClass, f64>,
 ) {
-    let start_min = session.start.floor() as i64;
-    let end_min = session.end.ceil() as i64; // inclusive upper bound
+    let start_min = (session.start / 60.0).floor() as i64;
+    let end_min = (session.end / 60.0).ceil() as i64; // inclusive upper bound
     if end_min <= start_min {
         return (vec![], 0.0, 0.0, HashMap::new());
     }
@@ -42,7 +42,7 @@ pub fn classify_minutes(
     // Collect events per minute: (is_write_count, agent_edit_count, agent_entities)
     let mut min_data: HashMap<i64, (usize, usize, Vec<String>)> = HashMap::new();
     for ev in &session.events {
-        let mi = (ev.time.floor()) as i64;
+        let mi = (ev.time / 60.0).floor() as i64;
         min_data.entry(mi).or_default();
         let d = min_data.get_mut(&mi).unwrap();
         if ev.is_agent {
@@ -111,7 +111,7 @@ pub fn classify_minutes(
         *class_counts.entry(MinuteClass::Silent).or_insert(0.0) += 1.0;
     }
 
-    let wall_clock = (end_min - start_min) as f64 / 60.0;
+    let wall_clock = (end_min - start_min) as f64;
     (
         classified,
         credited,
@@ -131,26 +131,28 @@ fn is_in_resolved_stuck_window(min: i64, windows: &[(i64, i64, String)]) -> bool
 }
 
 /// Compute stuck windows from human heartbeats.
-/// A stuck window: ≥10 min of activity where no two consecutive touches
+/// A stuck window: ≥10 min of active presence where no two consecutive touches
 /// are >10 min apart and no is_write=1 heartbeat. Resolves on first
 /// is_write=1 or agent edit on the same file (within ±15 min).
 /// Never resolves at session end — window stays open.
 fn compute_stuck_windows(session: &crate::derive::timeline::Session) -> Vec<(i64, i64, String)> {
     let mut windows: Vec<(i64, i64, String)> = Vec::new();
 
-    // Group human (non-agent, is_write) heartbeats by entity
-    let human_evts: Vec<&Event> = session.events.iter().filter(|e| !e.is_agent && e.is_write).collect();
+    // Group ALL human (non-agent) heartbeats by entity — presence, not just writes.
+    // A stuck window is ≥10 min of active presence with no is_write=1 heartbeat.
+    let human_evts: Vec<&Event> = session.events.iter().filter(|e| !e.is_agent).collect();
     let mut by_entity: HashMap<String, Vec<i64>> = HashMap::new();
     for ev in &human_evts {
         by_entity
             .entry(ev.entity.clone())
             .or_default()
-            .push((ev.time.floor()) as i64);
+            .push((ev.time / 60.0).floor() as i64);
     }
 
     for (entity, mins) in &by_entity {
         let mut sorted: Vec<i64> = mins.clone();
         sorted.sort();
+        sorted.dedup();
         if sorted.len() < 10 {
             // Need at least 10 min of activity to open a window
             continue;
@@ -179,17 +181,24 @@ fn compute_stuck_windows(session: &crate::derive::timeline::Session) -> Vec<(i64
             runs.push((s, last_min.unwrap_or(s + 9)));
         }
 
-        // Each run that is ≥10 min long is a potential stuck window.
-        // We'll mark it "potentially stuck" and check resolution below.
         for (rs, re) in &runs {
-            if re - rs + 1 >= 10 {
-                // This run is ≥10 min — it's a potential stuck window.
-                // Check if it resolves: first is_write=1 or agent edit on same file within ±15 min of the window end.
-                if resolves_within(&session, *rs, *re, &entity) {
-                    // resolved — still record the window but mark as resolved
-                    windows.push((*rs, *re, entity.clone()));
+            if re - rs + 1 < 10 {
+                continue;
+            }
+            // Skip runs that contain any write heartbeat — struggle means nothing landed.
+            let contains_write = session.events.iter().any(|ev| {
+                if ev.is_agent || !ev.is_write || ev.entity != *entity {
+                    return false;
                 }
-                // If not resolved, we don't record it (window stays open at session end)
+                let mi = (ev.time / 60.0).floor() as i64;
+                mi >= *rs && mi <= *re
+            });
+            if contains_write {
+                continue;
+            }
+            // Check if it resolves: first is_write=1 or agent edit on same file within ±15 min
+            if resolves_within(&session, *rs, *re, &entity) {
+                windows.push((*rs, *re, entity.clone()));
             }
         }
     }
@@ -210,7 +219,7 @@ fn resolves_within(
         if ev.is_agent || !ev.is_write || ev.entity != entity {
             continue;
         }
-        let ev_min = (ev.time.floor()) as i64;
+        let ev_min = (ev.time / 60.0).floor() as i64;
         if ev_min >= run_end.saturating_sub(15) && ev_min <= run_end.saturating_add(15) {
             return true;
         }
@@ -220,7 +229,7 @@ fn resolves_within(
         if !ev.is_agent || ev.entity != entity {
             continue;
         }
-        let ev_min = (ev.time.floor()) as i64;
+        let ev_min = (ev.time / 60.0).floor() as i64;
         if ev_min >= run_end.saturating_sub(15) && ev_min <= run_end.saturating_add(15) {
             return true;
         }
@@ -243,7 +252,7 @@ fn has_human_heartbeat_in_window(
         }
         for ae in agent_entities {
             if ev.entity == *ae {
-                let ev_min = (ev.time.floor()) as i64;
+                let ev_min = (ev.time / 60.0).floor() as i64;
                 if ev_min >= win_start && ev_min <= win_end {
                     return true;
                 }

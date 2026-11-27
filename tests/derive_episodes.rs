@@ -59,10 +59,9 @@ fn human_write_minute_credits_full() {
 
 #[test]
 fn agent_edit_with_nearby_human_is_reviewed_half_credit() {
-    // human is_write on same entity, agent edit 15 sec later (within ±15 min window)
-    // filler human at end to extend session span past agent minute
-    let raw = vec![hb(BASE + 60.0, "proj/a.rs", true), hb(BASE + 120.0, "proj/a.rs", true)];
-    let agent_raw = vec![agent(BASE + 75.0, "proj/a.rs")];
+    // human is_write on same entity, agent edit 90 sec later (different minute, within ±15 min window)
+    let raw = vec![hb(BASE + 60.0, "proj/a.rs", true)];
+    let agent_raw = vec![agent(BASE + 150.0, "proj/a.rs")];
     let s = timeline::sessions(&raw, &agent_raw);
     assert_eq!(s.len(), 1);
     let (_, credited, _wall, counts) = classify::classify_minutes(&s[0]);
