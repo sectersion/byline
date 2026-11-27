@@ -28,17 +28,18 @@ Then it builds the evidence a reviewer needs to say
 
 ## how it works
 
-```
- editor ──heartbeats──▶ byline daemon ──untouched──▶ Hackatime
-                          │  local sqlite
-                          ▼
-                     byline report
-              hours · struggle · agent time
-```
-
 Your editor sends the heartbeats it always sent. byline stores them raw,
 forwards them untouched, and derives the human story from the AI and human
 fields already in every heartbeat.
+
+<br>
+
+## editors
+
+| editor | status |
+|:---:|:---:|
+| <img src="https://avatars.githubusercontent.com/u/115930451?s=20" width="20" height="20" alt="Claude Code" /> **Claude Code** | supported |
+| <img src="https://avatars.githubusercontent.com/u/178074724?s=20" width="20" height="20" alt="OpenCode" /> **OpenCode** | supported |
 
 <br>
 
