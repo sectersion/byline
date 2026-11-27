@@ -54,7 +54,7 @@ fn set_ini(content: &str, key: &str, value: &str) -> (String, bool) {
     (out.join("\n"), true)
 }
 
-fn get_ini(content: &str, key: &str) -> Option<String> {
+pub(crate) fn get_ini(content: &str, key: &str) -> Option<String> {
     content.lines().find_map(|l| {
         let t = l.trim_start();
         let rest = t.strip_prefix(key)?;
