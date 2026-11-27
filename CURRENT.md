@@ -5,8 +5,14 @@
    `http://127.0.0.1:8787/api/v1/users/current/heartbeats.bulk`.
 2. byline stores each payload object raw in sqlite (`%USERPROFILE%/.byline/byline.db`,
    table `heartbeats`, column `raw` byte-identical) with `received_at`,
-   auth method, api key. No dedupe. Malformed bodies → 400 + debug file,
-   never stored. Unknown paths → 404 + `unknown_paths` row.
+   auth method, and the key's last 4 chars only (SEC-001: sqlite never
+   holds the plaintext key; the column is provenance). No dedupe. Malformed
+   bodies → 400 + debug file, never stored. Unknown paths → 404 +
+   `unknown_paths` row. Requests whose key does not match the user's real
+   key (read once at startup from `~/.wakatime.cfg`, the file setup manages)
+   → 401, nothing read or stored; unreadable cfg → accept-any fallback.
+   (docs/schema.sql's `api_key ... (needed to forward)` comment is stale:
+   forwarding reads the config table, not the row.)
 3. A drain pass posts each unforwarded row's original body to the upstream
    (api_url + key recorded by setup) with the original key; 2xx sets
    `forwarded_at`. Backoff 15·2^n capped 3600s, failure count in config.
